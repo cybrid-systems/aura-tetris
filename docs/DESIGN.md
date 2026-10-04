@@ -125,7 +125,7 @@ Each scripted tick gravity-steps and auto-steps that worldline on the live
 matrix. The smoke plays the aggressive game, then the defensive game, on
 the shared sequence (the heuristics do not read each other's cells, so the
 lockstep copy is not required for the token). It prints `WINNER mid=`
-`side=` `reason=` and `TETRIS_M2_DUEL_OK` only when the fingerprints diverge.
+`side=` `reason=` and `TETRIS_M2_DUEL_OK` only when the fingerprints differ.
 Reasons: `lines_lead` (more lines, else more score) or `survive` (the other
 board topped out).
 
