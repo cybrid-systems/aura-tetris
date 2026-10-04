@@ -1,0 +1,8 @@
+; Dual-strategy duel. Two Soft boards share one bag sequence. Left runs the
+; aggressive place-fn worldline, right the defensive one. C only blits.
+; hot-strategy:swap! / heal! move the live tetris:place-fn slot when
+; select-best or a storm changes the winner. Not Restricted mode, not AOT.
+(load "/workspace/aura-tetris/soft/tetris/world.aura")
+(load "/workspace/aura-tetris/soft/tetris/strategy.aura")
+(require "std/string" all:)
+(require "std/process" all:)
