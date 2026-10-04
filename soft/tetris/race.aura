@@ -1,0 +1,551 @@
+; Quad worldline race. Four placement strategies score ONE landing on the
+; same locked matrix and the same piece. The live board is not written.
+; The candidate list is built once on the caller (row occupancy, new
+; holes under the piece, column-height sum). Four fiber:spawn folds then
+; pick agg / def / hole-fill / tetris-hunt. This CLI reports
+; fiber:spawn-backend 2 (thread fallback, bodies serialized). Private
+; board copies inside a fiber bump defuse_version on every cell and are
+; not used. fiber_live is stamped only when four distinct positive ids
+; join to landing lists. Otherwise the same folds run on the host fiber
+; and the stamp is host-sequential — never a fake fiber_live.
+;
+; Select-best is expected lines, then lower aggregate stack height,
+; then the earlier strategy (agg, def, hole, hunt).
+
+(define *race-on* 0)
+(define *race-ty* 0)
+(define *race-world* "none")
+(define *race-backend* 0)
+(define *race-mid* 0)
+(define *race-side* "-")
+(define *race-reason* "boot")
+(define *race-ghost* "")
+(define *race-fp0* 0)
+(define *race-fp1* 0)
+(define *race-fp2* 0)
+(define *race-fp3* 0)
+(define *race-r0* #f)
+(define *race-r1* #f)
+(define *race-r2* #f)
+(define *race-r3* #f)
+
+(define (race-nth xs i)
+  (if (or (null? xs) (< i 0)) 0
+      (if (= i 0) (car xs)
+          (race-nth (cdr xs) (- i 1)))))
+
+(define (tetris:race-land ty rot x)
+  (if (not (cells-ok? ty rot x 1))
+      -1
+      (let loop ((y 1))
+        (if (cells-ok? ty rot x (+ y 1))
+            (loop (+ y 1))
+            y))))
+
+(define (race-copy)
+  (let ((n (* *W* *H*))
+        (b (make-vector (* *W* *H*) 0)))
+    (let loop ((i 0))
+      (if (>= i n)
+          b
+          (begin
+            (vector-set! b i (vector-ref *board* i))
+            (loop (+ i 1)))))))
+
+(define (race-line-full? b y)
+  (let loop ((x 0))
+    (if (>= x *W*) #t
+        (if (= (vector-ref b (+ (* y *W*) x)) 0)
+            #f
+            (loop (+ x 1))))))
+
+(define (race-clear-row! b y)
+  (let loop ((yy y))
+    (if (<= yy 0)
+        (let fill ((x 0))
+          (if (< x *W*)
+              (begin
+                (vector-set! b x 0)
+                (fill (+ x 1)))
+              #t))
+        (begin
+          (let copy ((x 0))
+            (if (< x *W*)
+                (begin
+                  (vector-set! b (+ (* yy *W*) x)
+                               (vector-ref b (+ (* (- yy 1) *W*) x)))
+                  (copy (+ x 1)))
+                #t))
+          (loop (- yy 1))))))
+
+(define *race-clear-budget* 0)
+(define (race-clear! b)
+  (set! *race-clear-budget* 0)
+  (let loop ((y (- *H* 1)) (n 0))
+    (set! *race-clear-budget* (+ *race-clear-budget* 1))
+    (if (or (< y 0) (> *race-clear-budget* 40))
+        n
+        (if (race-line-full? b y)
+            (begin
+              (race-clear-row! b y)
+              (loop y (+ n 1)))
+            (loop (- y 1) n)))))
+
+(define (race-col-h b x)
+  (let loop ((y 0))
+    (if (>= y *H*)
+        0
+        (if (> (vector-ref b (+ (* y *W*) x)) 0)
+            (- *H* y)
+            (loop (+ y 1))))))
+
+(define (race-height b)
+  (let loop ((x 0) (sum 0))
+    (if (>= x *W*)
+        sum
+        (loop (+ x 1) (+ sum (race-col-h b x))))))
+
+(define (race-col-holes b x)
+  (let loop ((y 0) (seen 0) (h 0))
+    (if (>= y *H*)
+        h
+        (let ((v (vector-ref b (+ (* y *W*) x))))
+          (if (> v 0)
+              (loop (+ y 1) 1 h)
+              (loop (+ y 1) seen (if (= seen 1) (+ h 1) h)))))))
+
+(define (race-holes b)
+  (let loop ((x 0) (h 0))
+    (if (>= x *W*)
+        h
+        (loop (+ x 1) (+ h (race-col-holes b x))))))
+
+(define (race-well b)
+  (let ((hs (make-vector *W* 0)))
+    (let fill ((x 0))
+      (if (< x *W*)
+          (begin
+            (vector-set! hs x (race-col-h b x))
+            (fill (+ x 1)))))
+    (let scan ((x 0) (best 0))
+      (if (>= x *W*)
+          best
+          (let* ((ch (vector-ref hs x))
+                 (left (if (> x 0) (vector-ref hs (- x 1)) (+ ch 4)))
+                 (right (if (< (+ x 1) *W*) (vector-ref hs (+ x 1)) (+ ch 4)))
+                 (m (if (< left right) left right))
+                 (d (- m ch)))
+            (scan (+ x 1) (if (> d best) d best)))))))
+
+(define *pow2* (make-vector 13 0))
+(vector-set! *pow2* 0 1)
+(let pow ((i 1))
+  (if (< i 13)
+      (begin
+        (vector-set! *pow2* i (* 2 (vector-ref *pow2* (- i 1))))
+        (pow (+ i 1)))))
+(define *row-masks* (make-vector 20 0))
+(define *mask-scratch* (make-vector 20 0))
+
+(define (bit-on? mask x)
+  (if (or (< x 0) (>= x 13))
+      #f
+      (not (= (modulo (quotient mask (vector-ref *pow2* x)) 2) 0))))
+
+(define (bit-set mask x)
+  (if (bit-on? mask x)
+      mask
+      (+ mask (vector-ref *pow2* x))))
+
+(define (tetris:race-prepare!)
+  (let yloop ((y 0))
+    (if (< y *H*)
+        (begin
+          (let xloop ((x 0) (mask 0))
+            (if (>= x *W*)
+                (vector-set! *row-masks* y mask)
+                (xloop (+ x 1)
+                       (if (> (cell-ref x y) 0) (bit-set mask x) mask))))
+          (yloop (+ y 1)))))
+  *H*)
+
+(define (mask-load!)
+  (let loop ((y 0))
+    (if (< y *H*)
+        (begin
+          (vector-set! *mask-scratch* y (vector-ref *row-masks* y))
+          (loop (+ y 1))))))
+
+(define (mask-full)
+  (- (vector-ref *pow2* *W*) 1))
+
+(define (mask-clear-row! y)
+  (let loop ((yy y))
+    (if (<= yy 0)
+        (vector-set! *mask-scratch* 0 0)
+        (begin
+          (vector-set! *mask-scratch* yy (vector-ref *mask-scratch* (- yy 1)))
+          (loop (- yy 1))))))
+
+(define (mask-clear!)
+  (let ((full (mask-full)))
+    (let loop ((y (- *H* 1)) (n 0))
+      (if (< y 0)
+          n
+          (if (= (vector-ref *mask-scratch* y) full)
+              (begin
+                (mask-clear-row! y)
+                (loop y (+ n 1)))
+              (loop (- y 1) n))))))
+
+(define (mask-col-h x)
+  (let loop ((y 0))
+    (if (>= y *H*)
+        0
+        (if (bit-on? (vector-ref *mask-scratch* y) x)
+            (- *H* y)
+            (loop (+ y 1))))))
+
+(define (mask-height)
+  (let loop ((x 0) (sum 0))
+    (if (>= x *W*) sum
+        (loop (+ x 1) (+ sum (mask-col-h x))))))
+
+(define (mask-col-holes x)
+  (let loop ((y 0) (seen 0) (h 0))
+    (if (>= y *H*)
+        h
+        (if (bit-on? (vector-ref *mask-scratch* y) x)
+            (loop (+ y 1) 1 h)
+            (loop (+ y 1) seen (if (= seen 1) (+ h 1) h))))))
+
+(define (mask-holes)
+  (let loop ((x 0) (h 0))
+    (if (>= x *W*) h
+        (loop (+ x 1) (+ h (mask-col-holes x))))))
+
+(define (mask-well)
+  (let ((hs (make-vector 12 0)))
+    (let fill ((x 0))
+      (if (< x *W*)
+          (begin
+            (vector-set! hs x (mask-col-h x))
+            (fill (+ x 1)))))
+    (let scan ((x 0) (best 0))
+      (if (>= x *W*)
+          best
+          (let* ((ch (vector-ref hs x))
+                 (left (if (> x 0) (vector-ref hs (- x 1)) (+ ch 4)))
+                 (right (if (< (+ x 1) *W*) (vector-ref hs (+ x 1)) (+ ch 4)))
+                 (m (if (< left right) left right))
+                 (d (- m ch)))
+            (scan (+ x 1) (if (> d best) d best)))))))
+
+(define *race-fill* (make-vector 20 0))
+(define *race-top* (make-vector 12 -1))
+(define *race-colh* (make-vector 12 0))
+(define *row-add* (make-vector 20 0))
+(define *nh* (make-vector 12 0))
+
+(define (race-first-y x)
+  (let loop ((y 0))
+    (if (>= y *H*) -1
+        (if (> (cell-ref x y) 0) y
+            (loop (+ y 1))))))
+
+; One pass over the locked board. Candidates then only touch the piece cells.
+(define (tetris:race-prepare!)
+  (let yloop ((y 0))
+    (if (< y *H*)
+        (begin
+          (let xloop ((x 0) (n 0))
+            (if (>= x *W*)
+                (vector-set! *race-fill* y n)
+                (xloop (+ x 1) (if (> (cell-ref x y) 0) (+ n 1) n))))
+          (yloop (+ y 1)))))
+  (let xloop ((x 0))
+    (if (< x 12)
+        (begin
+          (if (< x *W*)
+              (let ((t (race-first-y x)))
+                (vector-set! *race-top* x t)
+                (vector-set! *race-colh* x (if (< t 0) 0 (- *H* t))))
+              (begin
+                (vector-set! *race-top* x -1)
+                (vector-set! *race-colh* x 0)))
+          (xloop (+ x 1)))))
+  0)
+
+(define (piece-low cs xp yp col best)
+  (if (or (null? cs) (not (pair? cs)))
+      best
+      (let* ((c (car cs))
+             (cx (+ xp (race-nth c 0)))
+             (cy (+ yp (race-nth c 1))))
+        (piece-low (cdr cs) xp yp col
+                   (if (and (= cx col) (> cy best)) cy best)))))
+
+; Landing record: rot x y lines height new-holes well(unused 0).
+; lines = rows the piece completes. new-holes = empty cells left under it.
+; height = sum of column heights after the piece (lower is cleaner).
+(define (tetris:race-measure ty rot x y)
+  (let zap ((i 0))
+    (if (< i *H*)
+        (begin (vector-set! *row-add* i 0) (zap (+ i 1)))))
+  (let copy ((i 0))
+    (if (< i *W*)
+        (begin
+          (vector-set! *nh* i (vector-ref *race-colh* i))
+          (copy (+ i 1)))))
+  (let walk ((cs (shape-cells ty rot)))
+    (if (or (null? cs) (not (pair? cs)))
+        #t
+        (let* ((c (car cs))
+               (cx (+ x (race-nth c 0)))
+               (cy (+ y (race-nth c 1))))
+          (if (and (>= cy 0) (< cy *H*))
+              (vector-set! *row-add* cy (+ 1 (vector-ref *row-add* cy))))
+          (if (and (>= cx 0) (< cx *W*))
+              (let ((ph (- *H* cy)))
+                (if (> ph (vector-ref *nh* cx))
+                    (vector-set! *nh* cx ph))))
+          (walk (cdr cs)))))
+  (let ((lines
+         (let loop ((yy 0) (n 0))
+           (if (>= yy *H*)
+               n
+               (let ((a (vector-ref *row-add* yy)))
+                 (loop (+ yy 1)
+                       (if (and (> a 0)
+                                (= (+ (vector-ref *race-fill* yy) a) *W*))
+                           (+ n 1)
+                           n))))))
+        (holes
+         (let loop ((col 0) (h 0))
+           (if (>= col *W*)
+               h
+               (let ((low (piece-low (shape-cells ty rot) x y col -1)))
+                 (if (< low 0)
+                     (loop (+ col 1) h)
+                     (let ((top (vector-ref *race-top* col)))
+                       (loop (+ col 1)
+                             (if (and (>= top 0) (> top (+ low 1)))
+                                 (+ h (- top (+ low 1)))
+                                 h))))))))
+        (height
+         (let loop ((i 0) (s 0))
+           (if (>= i *W*) s
+               (loop (+ i 1) (+ s (vector-ref *nh* i)))))))
+    (list rot x y lines height holes 0)))
+
+; mode 1 agg (deep, right), 2 def (shallow, left),
+; 3 hole-fill (fewer holes, then shorter stack),
+; 4 tetris-hunt (lines, then a deeper well).
+(define (tetris:race-better? mode a b)
+  (let ((ay (race-nth a 2)) (by (race-nth b 2))
+        (ax (race-nth a 1)) (bx (race-nth b 1))
+        (ar (race-nth a 0)) (br (race-nth b 0))
+        (al (race-nth a 3)) (bl (race-nth b 3))
+        (ah (race-nth a 4)) (bh (race-nth b 4))
+        (ao (race-nth a 5)) (bo (race-nth b 5))
+        (aw (race-nth a 6)) (bw (race-nth b 6)))
+    (cond
+      ((= mode 1)
+       (or (> ay by)
+           (and (= ay by) (> ax bx))
+           (and (= ay by) (= ax bx) (> ar br))))
+      ((= mode 2)
+       (or (< ay by)
+           (and (= ay by) (< ax bx))
+           (and (= ay by) (= ax bx) (< ar br))))
+      ((= mode 3)
+       ; hole-fill: fewer new holes, then lefter, then shallower
+       (or (< ao bo)
+           (and (= ao bo) (< ax bx))
+           (and (= ao bo) (= ax bx) (< ay by))
+           (and (= ao bo) (= ax bx) (= ay by) (< ar br))))
+      (#t
+       ; tetris-hunt: more lines, then fewer new holes, then righter
+       (or (> al bl)
+           (and (= al bl) (< ao bo))
+           (and (= al bl) (= ao bo) (> ax bx))
+           (and (= al bl) (= ao bo) (= ax bx) (> ay by)))))))
+
+(define (tetris:race-search ty mode)
+  (let loop ((rot 0) (x 0) (best #f))
+    (if (>= rot 4)
+        best
+        (if (>= x *W*)
+            (loop (+ rot 1) 0 best)
+            (let ((y (tetris:race-land ty rot x)))
+              (if (< y 0)
+                  (loop rot (+ x 1) best)
+                  (let ((m (tetris:race-measure ty rot x y)))
+                    (loop rot (+ x 1)
+                          (if (or (not best) (tetris:race-better? mode m best))
+                              m
+                              best)))))))))
+
+; Candidate list is built once on the caller. Fibers only fold it.
+; vector-set! inside a CLI fiber bumps the mutation epoch on every cell
+; (defuse_version) and makes four private matrix copies unusably slow.
+; The locked board is therefore read once; each worldline fiber applies
+; its own objective to that same landing list. Not four private boards.
+(define *race-cands* '())
+
+(define (tetris:race-candidates ty)
+  (tetris:race-prepare!)
+  (let loop ((rot 0) (x 0) (acc '()))
+    (if (>= rot 4)
+        acc
+        (if (>= x *W*)
+            (loop (+ rot 1) 0 acc)
+            (let ((y (tetris:race-land ty rot x)))
+              (if (< y 0)
+                  (loop rot (+ x 1) acc)
+                  (loop rot (+ x 1)
+                        (cons (tetris:race-measure ty rot x y) acc))))))))
+
+(define (tetris:race-pick mode cands best)
+  (if (or (null? cands) (not (pair? cands)))
+      best
+      (let ((m (car cands)))
+        (tetris:race-pick mode (cdr cands)
+                          (if (or (not best) (tetris:race-better? mode m best))
+                              m
+                              best)))))
+
+(define (tetris:race-go-1) (tetris:race-pick 1 *race-cands* #f))
+(define (tetris:race-go-2) (tetris:race-pick 2 *race-cands* #f))
+(define (tetris:race-go-3) (tetris:race-pick 3 *race-cands* #f))
+(define (tetris:race-go-4) (tetris:race-pick 4 *race-cands* #f))
+
+(define (race-fp m)
+  (+ (* (race-nth m 0) 100000)
+     (+ (* (+ (race-nth m 1) 3) 1000)
+        (+ (* (race-nth m 2) 10) (race-nth m 3)))))
+
+(define (race-name mode)
+  (cond ((= mode 1) "agg")
+        ((= mode 2) "def")
+        ((= mode 3) "hole")
+        (#t "hunt")))
+
+(define (race-cells ty rot x y)
+  (let loop ((cs (shape-cells ty rot)) (acc ""))
+    (if (null? cs)
+        acc
+        (let* ((c (car cs))
+               (cx (+ x (race-nth c 0)))
+               (cy (+ y (race-nth c 1)))
+               (bit (string-append (number->string cx) "," (number->string cy))))
+          (loop (cdr cs)
+                (if (string=? acc "")
+                    bit
+                    (string-append acc ";" bit)))))))
+
+(define (race-ghost-line mode m)
+  (string-append
+    "GHOST id=" (number->string mode)
+    " name=" (race-name mode)
+    " rot=" (number->string (race-nth m 0))
+    " x=" (number->string (race-nth m 1))
+    " y=" (number->string (race-nth m 2))
+    " lines=" (number->string (race-nth m 3))
+    " height=" (number->string (race-nth m 4))
+    " cells=" (race-cells *race-ty* (race-nth m 0) (race-nth m 1) (race-nth m 2))
+    "\n"))
+
+(define (race-win-better? a b)
+  (or (> (race-nth a 3) (race-nth b 3))
+      (and (= (race-nth a 3) (race-nth b 3))
+           (< (race-nth a 4) (race-nth b 4)))))
+
+(define (tetris:race-commit! ty r1 r2 r3 r4 world backend)
+  (set! *race-ty* ty)
+  (set! *race-r0* r1)
+  (set! *race-r1* r2)
+  (set! *race-r2* r3)
+  (set! *race-r3* r4)
+  (set! *race-fp0* (race-fp r1))
+  (set! *race-fp1* (race-fp r2))
+  (set! *race-fp2* (race-fp r3))
+  (set! *race-fp3* (race-fp r4))
+  (set! *race-world* world)
+  (set! *race-backend* backend)
+  (set! *race-ghost*
+        (string-append
+          (race-ghost-line 1 r1)
+          (race-ghost-line 2 r2)
+          (race-ghost-line 3 r3)
+          (race-ghost-line 4 r4)))
+  (let ((best 1)
+        (bm r1))
+    (if (race-win-better? r2 bm) (begin (set! best 2) (set! bm r2)))
+    (if (race-win-better? r3 bm) (begin (set! best 3) (set! bm r3)))
+    (if (race-win-better? r4 bm) (begin (set! best 4) (set! bm r4)))
+    (set! *race-mid* best)
+    (set! *race-side* (race-name best))
+    (set! *race-reason* "lines_then_height")
+    (set! *race-on* 1)
+    (tetris:explain! best "lines_then_height")
+    (set! *strat-mid* best)
+    (set! *strat-reason* "lines_then_height")
+    best))
+
+(define (race-landing? v)
+  (and (pair? v) (number? (car v))))
+
+(define (race-join fid)
+  (if (and (number? fid) (> fid 0))
+      (try (fiber:join fid) (catch (e) #f))
+      #f))
+
+; Fork four searches. fiber_live only if every join is a landing list.
+(define (tetris:race-type! ty)
+  (set! *race-ty* ty)
+  (set! *race-cands* (tetris:race-candidates ty))
+  (let ((backend (try (fiber:spawn-backend) (catch (e) 0))))
+    (let* ((f1 (try (fiber:spawn (lambda () (tetris:race-go-1))) (catch (e) #f)))
+           (f2 (try (fiber:spawn (lambda () (tetris:race-go-2))) (catch (e) #f)))
+           (f3 (try (fiber:spawn (lambda () (tetris:race-go-3))) (catch (e) #f)))
+           (f4 (try (fiber:spawn (lambda () (tetris:race-go-4))) (catch (e) #f)))
+           (r1 (race-join f1))
+           (r2 (race-join f2))
+           (r3 (race-join f3))
+           (r4 (race-join f4)))
+      (if (and (race-landing? r1) (race-landing? r2)
+               (race-landing? r3) (race-landing? r4)
+               (number? f1) (number? f2) (number? f3) (number? f4)
+               (not (= f1 f2)) (not (= f1 f3)) (not (= f1 f4))
+               (not (= f2 f3)) (not (= f2 f4)) (not (= f3 f4)))
+          (tetris:race-commit! ty r1 r2 r3 r4 "fiber_live" backend)
+          (tetris:race-commit! ty
+                               (tetris:race-pick 1 *race-cands* #f)
+                               (tetris:race-pick 2 *race-cands* #f)
+                               (tetris:race-pick 3 *race-cands* #f)
+                               (tetris:race-pick 4 *race-cands* #f)
+                               "host-sequential" backend)))))
+
+(define (tetris:race!)
+  (let ((ty (if (= *active* 1) *ptype* *next-type*)))
+    (tetris:race-type! ty)))
+
+(define (tetris:race-snap-extra)
+  (if (= *race-on* 0)
+      ""
+      (string-append
+        *race-ghost*
+        "WINNER mid=" (number->string *race-mid*)
+        " side=" *race-side*
+        " reason=" *race-reason* "\n"
+        "WORLD line=" *race-world*
+        " backend=" (number->string *race-backend*) "\n")))
+
+(define (tetris:race-fps-differ?)
+  (and (not (= *race-fp0* *race-fp1*))
+       (not (= *race-fp0* *race-fp2*))
+       (not (= *race-fp0* *race-fp3*))
+       (not (= *race-fp1* *race-fp2*))
+       (not (= *race-fp1* *race-fp3*))
+       (not (= *race-fp2* *race-fp3*))))
