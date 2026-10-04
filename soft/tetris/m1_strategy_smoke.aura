@@ -1,0 +1,60 @@
+; M1 strategy slot: reject a score-tampering body, swap a placement
+; lambda, probe it, then heal a probe-fail back to the previous body.
+; Does not run the line-clear smoke (that stays m0_smoke.aura).
+(load "/workspace/aura-tetris/soft/tetris/world.aura")
+(load "/workspace/aura-tetris/soft/tetris/strategy.aura")
+
+(define (ok-pair? r tag)
+  (and (pair? r) (equal? (car r) #t) (equal? (car (cdr r)) tag)))
+
+(define (fail-pair? r tag)
+  (and (pair? r) (equal? (car r) #f) (equal? (car (cdr r)) tag)))
+
+(define (main)
+  (let ((seeded (tetris:strategy-seed!)))
+    (if (not (ok-pair? seeded "seed"))
+        (begin
+          (display "TETRIS_M1_STRATEGY_FAIL seed\n")
+          seeded)
+        (let ((bad "(lambda (board piece) (begin (set! *score* 99) board))")
+              (good "(lambda (board piece) (if (number? board) (+ board 7) 1))")
+              (ugly "(lambda (board piece) (cons board piece))"))
+          (let ((rbad (tetris:apply-strategy! bad)))
+            (if (not (and (fail-pair? rbad "gate")
+                          (= (tetris:place-fn 3 1) 3)
+                          (= *score* 0)
+                          (= *lines* 0)))
+                (begin
+                  (display "TETRIS_M1_STRATEGY_FAIL gate\n")
+                  (display rbad)
+                  (newline)
+                  (display (tetris:place-fn 3 1))
+                  (newline))
+                (let ((rgood (tetris:apply-strategy! good)))
+                  (if (not (and (ok-pair? rgood "swap")
+                                (= (tetris:place-fn 3 1) 10)
+                                (= *score* 0)))
+                      (begin
+                        (display "TETRIS_M1_STRATEGY_FAIL swap\n")
+                        (display rgood)
+                        (newline)
+                        (display (tetris:place-fn 3 1))
+                        (newline))
+                      (let ((rugly (tetris:apply-strategy! ugly)))
+                        (if (and (fail-pair? rugly "probe")
+                                 (equal? *strat-reason* "heal")
+                                 (= (tetris:place-fn 3 1) 10)
+                                 (= *score* 0)
+                                 (= *lines* 0)
+                                 (= *level* 1))
+                            (display "TETRIS_M1_STRATEGY_OK\n")
+                            (begin
+                              (display "TETRIS_M1_STRATEGY_FAIL heal\n")
+                              (display rugly)
+                              (newline)
+                              (display *strat-reason*)
+                              (newline)
+                              (display (tetris:place-fn 3 1))
+                              (newline))))))))))))
+
+(main)
