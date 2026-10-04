@@ -1,0 +1,55 @@
+; File-fixture propose. No HTTP. Soft gates, probes, swaps, heals.
+(load "/workspace/aura-tetris/soft/tetris/world.aura")
+(load "/workspace/aura-tetris/soft/tetris/strategy.aura")
+(load "/workspace/aura-tetris/soft/tetris/propose.aura")
+
+(define (ok? r tag)
+  (and (pair? r) (equal? (car r) #t) (equal? (car (cdr r)) tag)))
+
+(define (fail? r tag)
+  (and (pair? r) (equal? (car r) #f) (equal? (car (cdr r)) tag)))
+
+(define (main)
+  (let ((seeded (tetris:strategy-seed!)))
+    (if (not (and (pair? seeded) (equal? (car seeded) #t)))
+        (display "TETRIS_M3_PROPOSE_FAIL seed\n")
+        (let ((good (tetris:propose-file!
+                      "/workspace/aura-tetris/soft/tetris/fixtures/good_place.lambda")))
+          (if (not (and (ok? good "propose_ok")
+                        (string=? *explain-reason* "propose_ok")
+                        (string=? *strat-reason* "propose_ok")
+                        (= (tetris:place-fn 4 0) 7)
+                        (= *score* 0)))
+              (begin
+                (display "TETRIS_M3_PROPOSE_FAIL ok\n")
+                (display *explain-reason*)
+                (newline))
+              (let ((bad (tetris:propose-file!
+                           "/workspace/aura-tetris/soft/tetris/fixtures/bad_place.lambda")))
+                (if (not (and (fail? bad "propose_reject")
+                              (string=? *explain-reason* "propose_reject")
+                              (= (tetris:place-fn 4 0) 7)
+                              (= *score* 0)))
+                    (begin
+                      (display "TETRIS_M3_PROPOSE_FAIL reject\n")
+                      (display *explain-reason*)
+                      (newline)
+                      (display (number->string *score*))
+                      (newline))
+                    (let ((ugly (tetris:propose-file!
+                                  "/workspace/aura-tetris/soft/tetris/fixtures/ugly_place.lambda")))
+                      (if (and (fail? ugly "propose_heal")
+                               (string=? *explain-reason* "propose_heal")
+                               (string=? *strat-reason* "propose_heal")
+                               (= (tetris:place-fn 4 0) 7)
+                               (= *score* 0)
+                               (= *lines* 0))
+                          (display "TETRIS_M3_PROPOSE_OK\n")
+                          (begin
+                            (display "TETRIS_M3_PROPOSE_FAIL heal\n")
+                            (display *explain-reason*)
+                            (newline)
+                            (display *strat-reason*)
+                            (newline)))))))))))
+
+(main)

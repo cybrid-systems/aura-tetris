@@ -1,0 +1,84 @@
+; Swap the score helper (ghost-row bonus table), reject a set! body,
+; heal a non-numeric body, then widen 10 -> 12. *score* is only written
+; by clear-lines!.
+(load "/workspace/aura-tetris/soft/tetris/world.aura")
+(load "/workspace/aura-tetris/soft/tetris/strategy.aura")
+(load "/workspace/aura-tetris/soft/tetris/rules.aura")
+
+(define (ok? r tag)
+  (and (pair? r) (equal? (car r) #t) (equal? (car (cdr r)) tag)))
+
+(define (fail? r tag)
+  (and (pair? r) (equal? (car r) #f) (equal? (car (cdr r)) tag)))
+
+(define (main)
+  (tetris:reset!)
+  (let ((sw (tetris:mutate-score!)))
+    (if (not (and (ok? sw "rule_score")
+                  (= (tetris:rule-score 1) 140)
+                  (= (tetris:rule-score 4) 840)
+                  (string=? *explain-reason* "rule_score")
+                  (= *score* 0)))
+        (begin
+          (display "TETRIS_M3_RULE_FAIL score-swap\n")
+          (display *explain-reason*)
+          (newline))
+        (begin
+          (tetris:drop-I-clear!)
+          (if (not (and (= *lines* 1) (= *score* 140) (= *W* 10)))
+              (begin
+                (display "TETRIS_M3_RULE_FAIL clear\n")
+                (display (number->string *score*))
+                (newline))
+              (let ((bad (tetris:apply-rule!
+                           "tetris:rule-score"
+                           "(lambda (n) (begin (set! *score* 9) 1))"
+                           "rule_score")))
+                (if (not (and (fail? bad "rule_reject")
+                              (= *score* 140)
+                              (= (tetris:rule-score 1) 140)
+                              (string=? *explain-reason* "rule_reject")))
+                    (begin
+                      (display "TETRIS_M3_RULE_FAIL gate\n")
+                      (display *explain-reason*)
+                      (newline))
+                    (let ((ugly (tetris:apply-rule!
+                                  "tetris:rule-score"
+                                  "(lambda (n) (cons n n))"
+                                  "rule_score")))
+                      (if (not (and (fail? ugly "rule_heal")
+                                    (= (tetris:rule-score 1) 140)
+                                    (= *score* 140)
+                                    (string=? *explain-reason* "rule_heal")))
+                          (begin
+                            (display "TETRIS_M3_RULE_FAIL heal\n")
+                            (display *explain-reason*)
+                            (newline)
+                            (display (number->string (tetris:rule-score 1)))
+                            (newline))
+                          (let ((wide (tetris:mutate-wide!)))
+                            (if (and (ok? wide "rule_width")
+                                     (= *W* 12)
+                                     (= (tetris:rule-width) 12)
+                                     (= (cell-ref 11 19) 0)
+                                     (= *score* 140)
+                                     (string=? *explain-reason* "rule_width"))
+                                (begin
+                                  (display "WIDTH=")
+                                  (display (number->string *W*))
+                                  (newline)
+                                  (display "SCORE=")
+                                  (display (number->string *score*))
+                                  (newline)
+                                  (display "reason=")
+                                  (display *explain-reason*)
+                                  (newline)
+                                  (display "TETRIS_M3_RULE_OK\n"))
+                                (begin
+                                  (display "TETRIS_M3_RULE_FAIL width\n")
+                                  (display *explain-reason*)
+                                  (newline)
+                                  (display (number->string *W*))
+                                  (newline)))))))))))))
+
+(main)
