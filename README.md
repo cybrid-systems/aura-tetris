@@ -1,13 +1,51 @@
 # aura-tetris
 
-Soft FlatAST Tetris — the live world is an Aura Soft program (board, pieces, lock,
-line clear, score). M0 is Soft-only ASCII / scripted smoke; optional thin C input
-can come later. Also an [aura-build](https://github.com/cybrid-systems/aura-build)
-dogfood project under `examples/dogfood/`.
+Aura Tetris is a live Soft world. The board, pieces, lock, line clear, and
+score are a Soft FlatAST program. A thin C viewport only blits `SNAP` frames
+and turns keys into `INPUT` lines. Classic controls are hygiene; the product
+is a hot-swappable placement strategy (`hot-strategy:swap!` / `heal!`) that
+Soft gates before it can touch the match.
 
+Design: [`docs/DESIGN.md`](docs/DESIGN.md).
 Repo: https://github.com/cybrid-systems/aura-tetris
 
-## Soft smoke (CI)
+Also an [aura-build](https://github.com/cybrid-systems/aura-build) dogfood
+project under `examples/dogfood/`.
+
+## Play
+
+```bash
+bash scripts/play.sh
+```
+
+Soft seed (`set-code` of `tetris:place-fn`) runs once at startup inside
+`ghcr.io/cybrid-systems/dev:v1.0.9`. Then:
+
+| Key | INPUT | Effect (Soft) |
+|-----|--------|----------------|
+| a / d / arrows | `left` / `right` | move |
+| s / down | `soft` | one row |
+| w / space / up | `hard` | hard drop + lock |
+| z / q | `ccw` | rotate counter-clockwise |
+| e / x | `cw` | rotate clockwise |
+| c | `hold` | hold (once per piece) |
+| f | `auto` | one step of `tetris:choose-move` |
+| p | — | pause (C stops sending `tick`) |
+| r | `restart` | Soft reset, same strategy slot |
+| Esc / Q | `quit` | leave |
+
+`q` rotates. Quit is Esc or uppercase `Q`, so it does not fight the rotate key.
+
+C never clears a line and never adds to the score. Gravity timing is Soft:
+each `tick` from the viewport counts, and a row falls every `max(2, 16-level)` ticks.
+
+To drop a proposed strategy in mid-game, set `TETRIS_STRATEGY_FILE` to a file
+whose contents are a single `(lambda (board piece) …)` body. Soft reads it
+once on the first `INPUT`, rejects bodies that mention `set!`, `score`,
+`lines`, `display`, `mutate:`, `eval`, `load`, `shell`, or `http`, probes the
+swap, and `heal!`s if the probe does not return a number. See `docs/DESIGN.md`.
+
+## Soft smoke
 
 Image `ghcr.io/cybrid-systems/dev:v1.0.9`, Soft tip binary
 `/workspace/aura-grok/build/aura` (host GLIBC is often too old — smoke always
@@ -15,28 +53,16 @@ runs Soft inside Docker with `--entrypoint /usr/local/bin/gosu`). Needs
 `AURA_SANDBOX=off`.
 
 ```bash
-bash scripts/smoke_soft.sh
+bash scripts/smoke_soft.sh    # M0: LINES=4 SCORE=400 TETRIS_M0_OK
+bash scripts/smoke_m1.sh      # M0 + strategy gate/swap/heal + SNAP pipe
+bash scripts/demo_soft.sh     # headless ASCII, ends TETRIS_DEMO_DONE
 ```
 
-Exit 0. Stdout includes:
-
-```
-LINES=4
-SCORE=400
-TETRIS_M0_OK
-```
-
-Sequence (documented in `docs/m0.md`): four times fill bottom cols `0..5`,
+M0 sequence (documented in `docs/m0.md`): four times fill bottom cols `0..5`,
 hard-drop horizontal **I** into `6..9` → one line each; level stays 1 so
 score is `4 × 100 = 400`.
 
-## Soft demo (ASCII auto-play)
-
-```bash
-bash scripts/demo_soft.sh
-```
-
-Or manually:
+Manual Soft run:
 
 ```bash
 sudo docker run --rm --entrypoint /usr/local/bin/gosu \
@@ -50,15 +76,16 @@ sudo docker run --rm --entrypoint /usr/local/bin/gosu \
   dev /workspace/aura-grok/build/aura /workspace/aura-tetris/soft/tetris/demo.aura
 ```
 
-Ends with `TETRIS_DEMO_DONE`. Prints ~20 gravity ticks of a 10×20 board.
-
 ## Engine
 
 | Path | Role |
 |------|------|
-| `soft/tetris/world.aura` | 10×20 board, IJLOSTZ, move / soft·hard drop / CW rotate (kicks 0,-1,+1), lock, clear, score |
-| `soft/tetris/m0_smoke.aura` | Deterministic smoke tokens |
-| `soft/tetris/demo.aura` | Headless auto-play ASCII demo |
+| `soft/tetris/world.aura` | 10×20 board, IJLOSTZ, move / soft·hard drop / CW+CCW (kicks 0,-1,+1), lock, clear, score |
+| `soft/tetris/strategy.aura` | `tetris:place-fn` hot-strategy slot, gate, probe, heal, `choose-move` |
+| `soft/tetris/play.aura` | interactive SNAP/INPUT loop, seeded 7-bag |
+| `soft/tetris/m0_smoke.aura` | deterministic line-clear tokens |
+| `soft/tetris/m1_strategy_smoke.aura` | swap + probe + heal → `TETRIS_M1_STRATEGY_OK` |
+| `c/play.c` | ANSI viewport (blit + keys only) |
 | `examples/dogfood/` | GOAL / stub / verify / dogfood.json for `aura-build llm-dogfood` |
 
 Score: `1/2/3/4` lines → `100/300/500/800 × level`; `level = 1 + lines/10`.
@@ -74,7 +101,7 @@ aura-build llm-dogfood --project /workspace/aura-tetris/examples/dogfood \
   --out /workspace/aura-tetris/trajectories/tetris_dogfood.jsonl --json || true
 ```
 
-Hand-written Soft engine + smoke is the primary M0 gate; dogfood is optional
+Hand-written Soft engine + smoke is the primary gate; dogfood is optional
 repair-loop exercise (`golden.aura` passes `verify.sh`).
 
 ## Soft tip
@@ -89,12 +116,16 @@ License: Apache-2.0
 
 # aura-tetris（中文）
 
-Soft FlatAST 俄罗斯方块：活世界在 Soft（棋盘 / 七种方块 / 消行 / 计分）。M0
-只需 Soft ASCII 冒烟与演示，不必上 C。
+活世界在 Soft：棋盘、七种方块、锁定、消行、计分。C 只是 ANSI 视口，把
+`SNAP` 画出来，把按键变成 `INPUT`。对局中可以热换落子策略
+（`hot-strategy:swap!`，失败 `heal!`）。Soft 不是 Restricted 沙箱模式，
+也不是原生插件热更新。详见 `docs/DESIGN.md`。
 
 ```bash
-bash scripts/smoke_soft.sh   # 期望 LINES=4 SCORE=400 TETRIS_M0_OK
-bash scripts/demo_soft.sh    # ASCII 自动玩，结尾 TETRIS_DEMO_DONE
+bash scripts/play.sh         # 游玩。q/z 逆时针，e/x 顺时针，Esc 或 Q 退出
+bash scripts/smoke_soft.sh   # LINES=4 SCORE=400 TETRIS_M0_OK
+bash scripts/smoke_m1.sh     # M0 + 策略门 + SNAP 管道
+bash scripts/demo_soft.sh    # ASCII 自动演示，结尾 TETRIS_DEMO_DONE
 ```
 
 镜像 `ghcr.io/cybrid-systems/dev:v1.0.9`，Soft 二进制 `/workspace/aura-grok/build/aura`。
