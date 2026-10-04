@@ -36,8 +36,15 @@
 ; 0 = live place-fn (row, type). 1 = place-agg (row, x). 2 = place-def (row, x).
 (define *score-mode* 0)
 
+(define (tetris:place-agg board piece)
+  (if (number? board) (+ (* board 100) piece) 0))
+(define (tetris:place-def board piece)
+  (if (number? board) (- (* (- 0 board) 100) piece) 0))
+
+; set-code only the live slot. Redefining place-agg / place-def inside
+; set-code drops primitive * once the race workspace is loaded (#eval-current).
 (define *seed-src*
-  "(define (tetris:place-fn board piece) (if (number? board) board 0))\n(define (tetris:place-agg board piece) (if (number? board) (+ (* board 100) piece) 0))\n(define (tetris:place-def board piece) (if (number? board) (- (* (- 0 board) 100) piece) 0))\n")
+  "(define (tetris:place-fn board piece) (if (number? board) board 0))\n")
 
 
 ; Human-facing stamp. Does not replace the M1 reason tag by itself.
@@ -51,8 +58,21 @@
     (catch (e) 0))
   reason)
 
+(define *strategy-seeded* 0)
+
+; set-code only on the first call, and only before race.aura is loaded.
+; A later set-code recompiles closures and drops primitives (cons, *).
 (define (tetris:strategy-seed!)
-  (let ((sc (try (set-code *seed-src*) (catch (e) e))))
+  (if (= *strategy-seeded* 1)
+      (if (tetris:probe-place!)
+          (begin
+            (tetris:explain! 0 "seed")
+            (list #t "seed"))
+          (begin
+            (set! *strat-reason* "probe")
+            (tetris:explain! 1 "probe")
+            (list #f "probe")))
+      (let ((sc (try (set-code *seed-src*) (catch (e) e))))
     (if (not (equal? sc #t))
         (begin
           (set! *strat-mid* 1)
@@ -62,6 +82,7 @@
           (eval-current)
           (hot-strategy:register! "tetris:place-fn" *place-body*)
           (set! *place-live* *place-body*)
+          (set! *strategy-seeded* 1)
           (set! *strat-mid* 0)
           (set! *strat-reason* "seed")
           (if (tetris:probe-place!)
@@ -71,7 +92,7 @@
               (begin
                 (set! *strat-reason* "probe")
                 (tetris:explain! 1 "probe")
-                (list #f "probe")))))))
+                (list #f "probe"))))))))
 
 ; Reject bodies that could touch score, print, or escape the strategy slot.
 (define (tetris:bad-body? s)
@@ -90,7 +111,8 @@
        (> (string-length body) 20)
        (< (string-length body) 2000)
        (string-prefix? body "(lambda")
-       (string-contains? body "board")
+       (or (string-contains? body "board")
+           (string-contains? body "row"))
        (string-contains? body "piece")
        (not (tetris:bad-body? body))))
 
@@ -119,7 +141,18 @@
        (tetris:explain! 1 "boundary")
        (list #f "boundary"))
       (#t
+       ; A load after the original seed detaches mutate:rebind from the
+       ; live place-fn cell (swap returns #t, the old body still runs).
+       ; Refresh the set-code slot immediately before rebind. This does
+       ; not rewrite place-agg / place-def and did not revert rule-score.
+       (let ((keep *place-live*))
+         (set! *strategy-seeded* 0)
+         (tetris:strategy-seed!)
+         ; strategy-seed! resets *place-live* to the seed body. Put the
+         ; previous good body back so a failed probe heals to it.
+         (set! *place-live* keep))
        (hot-strategy:register! "tetris:place-fn" *place-live*)
+       (hot-strategy:swap! "tetris:place-fn" *place-live* "refresh-live")
        (let ((sw (hot-strategy:swap! "tetris:place-fn" clean "tetris-place")))
          (if (not (and (pair? sw) (equal? (car sw) #t)))
              (begin
@@ -143,7 +176,7 @@
                    (set! *strat-mid* 1)
                    (set! *strat-reason* "heal")
                    (tetris:explain! 1 "heal")
-                   (list #f "probe")))))))))
+                   (list #f "probe"))))))))
 
 ; One file drop is the M1 propose hook (no network, no score field).
 ; The host or an LLM writes a lambda string; Soft still gates it.
@@ -275,3 +308,6 @@
               ((< *px* *best-x*) "right")
               ((> *px* *best-x*) "left")
               (#t "hard")))))
+
+; First seed while the workspace is still world+strategy, before race.aura.
+(tetris:strategy-seed!)
