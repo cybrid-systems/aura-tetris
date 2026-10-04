@@ -103,13 +103,62 @@ seed has to move; the in-match gate does not.
      good body
 
    The model is not asked for a score. A body that mentions score is
-   dropped on the floor. Worldline select-best (several candidate bodies,
-   probe each, keep the winner) is the next layer on this same gate. M1
-   is one live slot plus heal, not a swarm.
+   dropped on the floor. A live LLM call is optional; the file hook is the
+   propose path. M2 does not add a network call.
 
-`MID` in the SNAP is `mid` (0 seed, 1 once a proposal was judged) and
-`reason` (`seed`, `gate`, `boundary`, `swap`, `heal`, `probe`, …). That is
-how the viewport shows a swap without computing it.
+`MID` in the SNAP is the strategy id and a short reason tag
+(`seed`, `gate`, `swap`, `heal`, …). `EXPLAIN` is the human line:
+`mid=` and `reason=` (`gate_reject`, `heal`, `lines_lead`, `survive`,
+`storm_sz`, `lock`). stderr mirrors `EXPLAIN mid=… reason=…`. C does not
+invent either field.
+
+## M2 — duel, explain, storm
+
+Two boards, one bag. `soft/tetris/duel.aura` deals the same 7-bag sequence
+to both matrices. The left worldline calls `tetris:place-agg` (deeper row,
+then a righter column). The right worldline calls `tetris:place-def`
+(shallower row, then a lefter column). Both functions are seeded with the
+same sandbox-off `set-code` as `tetris:place-fn`. Search still goes through
+Soft. C never scores a candidate.
+
+Each scripted tick gravity-steps and auto-steps that worldline on the live
+matrix. The smoke plays the aggressive game, then the defensive game, on
+the shared sequence (the heuristics do not read each other's cells, so the
+lockstep copy is not required for the token). It prints `WINNER mid=`
+`side=` `reason=` and `TETRIS_M2_DUEL_OK` only when the fingerprints diverge.
+Reasons: `lines_lead` (more lines, else more score) or `survive` (the other
+board topped out).
+
+The live slot is still one `hot-strategy:swap!` / `heal!` name. After both
+worldlines finish, Soft sets `*commit-live*` and swaps `tetris:place-fn`
+onto the winner body. Doing that swap earlier snapshots the filled matrix
+and makes later cell writes very slow, so the interactive loop stamps the
+winner every step and commits the swap on `quit` (and immediately when a
+storm fires). That is the real mutate path, not a `set!` of the function
+and not `std/hot-update`.
+
+`scripts/duel.sh` is `tetris_play --duel`. Keys pilot the side in
+`PILOT side=L|R` (default left). `t` sends `toggle`. `f` sends `auto` and
+Soft steps both boards. Gravity (`tick`) steps both and auto-plays the
+side you are not piloting. The frame is `BOARD` beside `BOARD2`.
+
+Explain stamps on gate rejection (`gate_reject`), a probed swap (`swap`),
+a failed probe (`heal`), a lock (`lock` or `lines_lead` when the lock
+cleared lines), and a duel select (`lines_lead` / `survive`). The M1 return
+tags stay `gate` / `swap` / `probe` so `m1_strategy_smoke.aura` does not
+change meaning. `*strat-reason*` after a heal is still `heal`.
+
+Storm: if the next 6 pieces contain at least four S/Z or a run of three,
+Soft `hot-strategy:swap!`s the defensive body and stamps `storm_sz`. When
+the next 6 fall to one or zero S/Z, `hot-strategy:heal!` restores the
+previous body. A calm bag does not swap.
+
+Play:
+
+```bash
+bash scripts/duel.sh
+bash scripts/smoke_m2.sh
+```
 
 ## Non-goals
 
@@ -132,9 +181,15 @@ how the viewport shows a swap without computing it.
 | `soft/tetris/play.aura` | bag, hold, `INPUT` loop, `SNAP v1` |
 | `soft/tetris/m0_smoke.aura` | `LINES=4 SCORE=400 TETRIS_M0_OK` |
 | `soft/tetris/m1_strategy_smoke.aura` | gate + swap + probe + heal → `TETRIS_M1_STRATEGY_OK` |
-| `c/play.c` | ANSI 10×20 viewport |
+| `soft/tetris/duel.aura` | shared bag, two place-fn worldlines, SNAP `BOARD2` |
+| `soft/tetris/m2_duel_smoke.aura` | `TETRIS_M2_DUEL_OK` |
+| `soft/tetris/m2_explain_smoke.aura` | `TETRIS_M2_EXPLAIN_OK` |
+| `soft/tetris/m2_storm_smoke.aura` | `TETRIS_M2_STORM_OK` |
+| `c/play.c` | ANSI viewport; `--duel` draws both boards |
 | `scripts/play.sh` | build viewport, spawn Soft |
+| `scripts/duel.sh` | split-screen duel |
 | `scripts/smoke_m1.sh` | M0 + M1 + SNAP pipe + viewport build |
+| `scripts/smoke_m2.sh` | duel + explain + storm tokens |
 
 ## 短中文
 
@@ -148,4 +203,10 @@ probe，失败则 `heal!`）。这不是 Restricted 沙箱对局，也不是 AOT
 种子仍是沙箱外的一次 `set-code`，之后只 swap / heal。
 
 非目标：不做另一个方块克隆，也不做「换策略必须上原生插件」的护城河。
-多条世界线择优是下一层，M1 先把可替换、可探测、可回滚的策略槽落地。
+
+M2：同一 7-bag 上两盘。左 `place-agg`（更深、更靠右），右 `place-def`
+（更浅、更靠左）。`scripts/duel.sh` 左右分屏，按键操纵当前边（`t` 切换），
+`f` 两边各自动一步。择优写 `WINNER mid=` `reason=lines_lead|survive`。
+解释行是 `EXPLAIN mid=` `reason=`（`gate_reject`、`heal`、`storm_sz`）。
+S/Z 扎堆时 `hot-strategy:swap!` 到防守，袋子平静后 `heal!`。
+对局里的换策仍是 swap / heal，不是 Restricted，也不是 AOT。
