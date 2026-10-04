@@ -1,5 +1,8 @@
 (define *W* 10)
 (define *H* 20)
+; Cap is the live vector length. Width 10 uses 200 cells. A probed
+; rule-width of 12 retargets this to 240. M0 never retargets.
+(define *board-cap* 200)
 (define *board* (make-vector 200 0))
 (define *lines* 0)
 (define *score* 0)
@@ -70,7 +73,7 @@
       #f))
 (define (tetris:reset!)
   (let loop ((i 0))
-    (if (< i 200)
+    (if (< i *board-cap*)
         (begin (vector-set! *board* i 0) (loop (+ i 1)))))
   (set! *lines* 0)
   (set! *score* 0)
@@ -142,12 +145,20 @@
                   (copy (+ x 1)))
                 #t))
           (loop (- yy 1))))))
-(define (score-for n)
-  (cond ((= n 1) (* 100 *level*))
-        ((= n 2) (* 300 *level*))
-        ((= n 3) (* 500 *level*))
-        ((= n 4) (* 800 *level*))
+; Rules helper. hot-strategy:swap! may rebind this. It returns the base
+; table only. *score* is still written solely in tetris:clear-lines!.
+(define (tetris:rule-score n)
+  (cond ((= n 1) 100)
+        ((= n 2) 300)
+        ((= n 3) 500)
+        ((= n 4) 800)
         (#t 0)))
+; Constant 10 until a probed width rule says 12. Not a raw *W* read,
+; so the swap result is what retarget applies.
+(define (tetris:rule-width) 10)
+(define (score-for n)
+  (let ((base (tetris:rule-score n)))
+    (if (number? base) (* base *level*) 0)))
 (define (tetris:clear-lines!)
   (let loop ((y (- *H* 1)) (n 0))
     (if (< y 0)
@@ -261,3 +272,30 @@
                   (tetris:lock!)
                   (if (= *alive* 1)
                       (tetris:spawn! (modulo (+ *tick* 3) 7)))))))))
+
+; Copy src (stride old-w) into a fresh row-major vector (stride new-w).
+; Extra columns are empty. Dropped columns (narrowing) are discarded.
+; Does not write *score*.
+(define (tetris:remap-board src old-w new-w)
+  (let ((dst (make-vector (* new-w *H*) 0))
+        (keep (if (< old-w new-w) old-w new-w)))
+    (let loop-y ((y 0))
+      (if (>= y *H*)
+          dst
+          (begin
+            (let loop-x ((x 0))
+              (if (< x keep)
+                  (begin
+                    (vector-set! dst (+ (* y new-w) x)
+                                 (vector-ref src (+ (* y old-w) x)))
+                    (loop-x (+ x 1)))))
+            (loop-y (+ y 1)))))))
+; Apply a probed width. Caller already checked the helper returned 10 or 12.
+(define (tetris:retarget-width! new-w)
+  (if (or (not (number? new-w)) (= new-w *W*))
+      *W*
+      (begin
+        (set! *board* (tetris:remap-board *board* *W* new-w))
+        (set! *W* new-w)
+        (set! *board-cap* (* new-w *H*))
+        *W*)))
