@@ -1,0 +1,4 @@
+; N scripted ticks. Both boards share the bag and run a different place-fn.
+; Token only if the matrices/placements diverge and a winner mid is printed.
+(load "/workspace/aura-tetris/soft/tetris/duel.aura")
+(duel:script! 8)

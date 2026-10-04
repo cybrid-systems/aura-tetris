@@ -1,0 +1,3 @@
+; Interactive duel entry. SNAP on stdout, logs on stderr.
+(load "/workspace/aura-tetris/soft/tetris/duel.aura")
+(duel:play!)

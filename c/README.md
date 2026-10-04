@@ -7,4 +7,5 @@ next, hold, score, lines, and level. This binary only:
 - draws a 10×20 board
 
 It does not clear lines or compute score. Build via `scripts/play.sh`
-(CMake, C11).
+(CMake, C11). `scripts/duel.sh` passes `--duel` and draws `BOARD` next
+to `BOARD2` when Soft sends both. `t` is `INPUT toggle`.
