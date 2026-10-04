@@ -1,0 +1,127 @@
+; Live rules mutate. The helpers tetris:rule-width and tetris:rule-score
+; live in world.aura. Mid-match we hot-strategy:swap! a new body under
+; MutationBoundary (boundary-safe? + quota-ok?), probe it, and heal!
+; if the probe is not a number in range.
+;
+; The score helper returns a base table. clear-lines! multiplies by
+; level and is the only writer of *score*. A body that mentions set!
+; or score is rejected before rebind. Width is applied only after the
+; probe returns 10 or 12, by retargeting the matrix stride.
+
+(define *width-live* "(lambda () 10)")
+(define *score-classic*
+  "(lambda (n) (cond ((= n 1) 100) ((= n 2) 300) ((= n 3) 500) ((= n 4) 800) (#t 0)))")
+(define *score-mut*
+  "(lambda (n) (cond ((= n 1) 140) ((= n 2) 340) ((= n 3) 540) ((= n 4) 840) (#t 0)))")
+(define *score-live* *score-classic*)
+(define *rule-phase* 0)
+(define *rules-seeded* 0)
+
+; mutate:rebind sticks on a set-code define. The load-time define is the
+; fallback the seed reinstalls, same sandbox-off path as place-fn.
+(define (tetris:rules-seed!)
+  (if (= *rules-seeded* 1)
+      #t
+      (let ((src (string-append
+                   "(define (tetris:rule-score n) (cond ((= n 1) 100) ((= n 2) 300) ((= n 3) 500) ((= n 4) 800) (#t 0)))\n"
+                   "(define (tetris:rule-width) 10)\n")))
+        (let ((sc (try (set-code src) (catch (e) e))))
+          (if (equal? sc #t)
+              (begin
+                (eval-current)
+                (set! *rules-seeded* 1)
+                #t)
+              #f)))))
+
+(define (tetris:rule-body-ok? body)
+  (and (string? body)
+       (> (string-length body) 8)
+       (< (string-length body) 800)
+       (string-prefix? body "(lambda")
+       (not (tetris:bad-body? body))))
+
+(define (tetris:rule-probe! name)
+  (if (string=? name "tetris:rule-width")
+      (let ((v (try (tetris:rule-width) (catch (e) #f))))
+        (and (number? v) (or (= v 10) (= v 12))))
+      (let ((a (try (tetris:rule-score 1) (catch (e) #f)))
+            (b (try (tetris:rule-score 4) (catch (e) #f))))
+        (and (number? a) (number? b)))))
+
+(define (tetris:apply-rule! name body reason)
+  (tetris:rules-seed!)
+  (let ((clean (if (string? body) (string-trim body) "")))
+    (cond
+      ((not (tetris:rule-body-ok? clean))
+       (set! *strat-mid* 4)
+       (set! *strat-reason* "rule_reject")
+       (tetris:explain! 4 "rule_reject")
+       (list #f "rule_reject"))
+      ((not (tetris:boundary-ok?))
+       (set! *strat-mid* 4)
+       (set! *strat-reason* "rule_reject")
+       (tetris:explain! 4 "rule_reject")
+       (list #f "boundary"))
+      (#t
+       (let ((prev (if (string=? name "tetris:rule-width") *width-live* *score-live*)))
+         (hot-strategy:register! name prev)
+         (let ((sw (hot-strategy:swap! name clean reason)))
+           (if (not (and (pair? sw) (equal? (car sw) #t)))
+               (begin
+                 (set! *strat-mid* 4)
+                 (set! *strat-reason* "rule_reject")
+                 (tetris:explain! 4 "rule_reject")
+                 (list #f "swap"))
+               (if (tetris:rule-probe! name)
+                   (begin
+                     (if (string=? name "tetris:rule-width")
+                         (begin
+                           (set! *width-live* clean)
+                           (tetris:retarget-width! (tetris:rule-width)))
+                         (set! *score-live* clean))
+                     (if (and (string? *place-live*) (> (string-length *place-live*) 0))
+                         (hot-strategy:register! "tetris:place-fn" *place-live*))
+                     (set! *strat-mid* 4)
+                     (set! *strat-reason* reason)
+                     (tetris:explain! 4 reason)
+                     (list #t reason))
+                   (begin
+                     (hot-strategy:heal!)
+                     (if (not (tetris:rule-probe! name))
+                         (try
+                           (hot-strategy:swap! name prev "rule-heal")
+                           (catch (e) #f)))
+                     (set! *strat-mid* 4)
+                     (set! *strat-reason* "rule_heal")
+                     (tetris:explain! 4 "rule_heal")
+                     (list #f "rule_heal"))))))))))
+
+(define (tetris:mutate-wide!)
+  (let ((body (if (= *W* 12) *width-live* "(lambda () 12)")))
+    (let ((wide (if (= *W* 12) "(lambda () 10)" "(lambda () 12)")))
+      (let ((r (tetris:apply-rule! "tetris:rule-width" wide "rule_width")))
+        (if (and (pair? r) (equal? (car r) #t))
+            (set! *rule-phase* (if (= *W* 12) 1 0)))
+        r))))
+
+(define (tetris:mutate-score!)
+  (let ((body (if (string=? *score-live* *score-mut*) *score-classic* *score-mut*)))
+    (let ((r (tetris:apply-rule! "tetris:rule-score" body "rule_score")))
+      (if (and (pair? r) (equal? (car r) #t))
+          (set! *rule-phase* (if (string=? *score-live* *score-mut*) 2 0)))
+      r)))
+
+(define (tetris:mutate-heal-all!)
+  (tetris:apply-rule! "tetris:rule-width" "(lambda () 10)" "rule_width")
+  (tetris:apply-rule! "tetris:rule-score" *score-classic* "rule_score")
+  (set! *rule-phase* 0)
+  (set! *strat-mid* 4)
+  (set! *strat-reason* "rule_heal")
+  (tetris:explain! 4 "rule_heal")
+  (list #t "rule_heal"))
+
+; m cycles: classic -> wide -> ghost-bonus score table -> heal both.
+(define (tetris:mutate-cycle!)
+  (cond ((= *rule-phase* 0) (tetris:mutate-wide!))
+        ((= *rule-phase* 1) (tetris:mutate-score!))
+        (#t (tetris:mutate-heal-all!))))
