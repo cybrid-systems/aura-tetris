@@ -1,0 +1,27 @@
+; Headless Soft Tetris demo: ~20 gravity ticks, ASCII boards, ends TETRIS_DEMO_DONE.
+(load "/workspace/aura-tetris/soft/tetris/world.aura")
+
+(tetris:reset!)
+(tetris:spawn! 5)
+
+(define (demo-step! n)
+  (if (<= n 0)
+      #t
+      (begin
+        (display "TICK ")
+        (display (number->string (- 21 n)))
+        (newline)
+        (cond ((= (modulo n 5) 0) (tetris:rotate!))
+              ((= (modulo n 3) 0) (tetris:move! -1))
+              ((= (modulo n 3) 1) (tetris:move! 1)))
+        (if (not (tetris:soft-drop!))
+            (begin
+              (tetris:lock!)
+              (if (= *alive* 1)
+                  (tetris:spawn! (modulo (+ n 2) 7)))))
+        (tetris:print-board!)
+        (demo-step! (- n 1)))))
+
+(demo-step! 20)
+(display "TETRIS_DEMO_DONE")
+(newline)
