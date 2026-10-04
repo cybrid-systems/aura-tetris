@@ -10,18 +10,46 @@
 (require "std/hot-strategy" all:)
 (require "std/string" all:)
 (require "std/mutate" all:)
+(require "std/process" all:)
 
 (define *place-body*
   "(lambda (board piece) (if (number? board) board 0))")
+
+; Worldlines. Aggressive wants a deep landing and a rightward column.
+; Defensive wants a shallow landing and a leftward column. The live
+; tetris:place-fn slot stays the M1 contract (row, piece-type) -> number.
+; Duel search calls place-agg / place-def with (row, column).
+(define *agg-body*
+  "(lambda (board piece) (if (number? board) (+ (* board 100) piece) 0))")
+
+(define *def-body*
+  "(lambda (board piece) (if (number? board) (- (* (- 0 board) 100) piece) 0))")
 
 (define *place-live* *place-body*)
 
 (define *strat-mid* 0)
 (define *strat-reason* "boot")
+(define *explain-mid* 0)
+(define *explain-reason* "boot")
 (define *propose-once* 0)
+(define *storm-on* 0)
+; 0 = live place-fn (row, type). 1 = place-agg (row, x). 2 = place-def (row, x).
+(define *score-mode* 0)
 
 (define *seed-src*
-  "(define (tetris:place-fn board piece) (if (number? board) board 0))\n")
+  "(define (tetris:place-fn board piece) (if (number? board) board 0))\n(define (tetris:place-agg board piece) (if (number? board) (+ (* board 100) piece) 0))\n(define (tetris:place-def board piece) (if (number? board) (- (* (- 0 board) 100) piece) 0))\n")
+
+
+; Human-facing stamp. Does not replace the M1 reason tag by itself.
+; stderr mirrors EXPLAIN so a viewport log can show it without touching SNAP.
+(define (tetris:explain! mid reason)
+  (set! *explain-mid* mid)
+  (set! *explain-reason* reason)
+  (try
+    (sh (string-append "echo EXPLAIN mid=" (number->string mid)
+                       " reason=" reason " >&2"))
+    (catch (e) 0))
+  reason)
 
 (define (tetris:strategy-seed!)
   (let ((sc (try (set-code *seed-src*) (catch (e) e))))
@@ -37,9 +65,12 @@
           (set! *strat-mid* 0)
           (set! *strat-reason* "seed")
           (if (tetris:probe-place!)
-              (list #t "seed")
+              (begin
+                (tetris:explain! 0 "seed")
+                (list #t "seed"))
               (begin
                 (set! *strat-reason* "probe")
+                (tetris:explain! 1 "probe")
                 (list #f "probe")))))))
 
 ; Reject bodies that could touch score, print, or escape the strategy slot.
@@ -80,10 +111,12 @@
       ((not (tetris:body-ok? clean))
        (set! *strat-mid* 1)
        (set! *strat-reason* "gate")
+       (tetris:explain! 1 "gate_reject")
        (list #f "gate"))
       ((not (tetris:boundary-ok?))
        (set! *strat-mid* 1)
        (set! *strat-reason* "boundary")
+       (tetris:explain! 1 "boundary")
        (list #f "boundary"))
       (#t
        (hot-strategy:register! "tetris:place-fn" *place-live*)
@@ -92,12 +125,14 @@
              (begin
                (set! *strat-mid* 1)
                (set! *strat-reason* "swap")
+               (tetris:explain! 1 "swap")
                (list #f "swap"))
              (if (tetris:probe-place!)
                  (begin
                    (set! *place-live* clean)
                    (set! *strat-mid* 1)
                    (set! *strat-reason* "swap")
+                   (tetris:explain! 1 "swap")
                    (list #t "swap"))
                  (begin
                    (hot-strategy:heal!)
@@ -107,6 +142,7 @@
                          (catch (e) #f)))
                    (set! *strat-mid* 1)
                    (set! *strat-reason* "heal")
+                   (tetris:explain! 1 "heal")
                    (list #f "probe")))))))))
 
 ; One file drop is the M1 propose hook (no network, no score field).
@@ -125,6 +161,75 @@
                       (set! *strat-reason* "read")
                       (list #f "read"))
                     (tetris:apply-strategy! body))))))))
+
+
+; Score one candidate. Mode 0 keeps the M1 calling convention.
+(define (tetris:cand-score y x)
+  (cond ((= *score-mode* 1)
+         (try (tetris:place-agg y x) (catch (e) #f)))
+        ((= *score-mode* 2)
+         (try (tetris:place-def y x) (catch (e) #f)))
+        (#t
+         (try (tetris:place-fn y *ptype*) (catch (e) #f)))))
+
+(define (tetris:sz? t)
+  (or (= t 4) (= t 6)))
+
+(define (tetris:sz-count types n)
+  (let loop ((xs types) (i 0) (c 0))
+    (if (or (null? xs) (>= i n))
+        c
+        (loop (cdr xs) (+ i 1)
+              (if (tetris:sz? (car xs)) (+ c 1) c)))))
+
+(define (tetris:sz-run types n)
+  (let loop ((xs types) (i 0) (cur 0) (best 0))
+    (if (or (null? xs) (>= i n))
+        (if (> cur best) cur best)
+        (if (tetris:sz? (car xs))
+            (let ((nc (+ cur 1)))
+              (loop (cdr xs) (+ i 1) nc (if (> nc best) nc best)))
+            (loop (cdr xs) (+ i 1) 0 best)))))
+
+; High S/Z ratio in the next 6, or a run of three.
+(define (tetris:storm? types)
+  (or (>= (tetris:sz-count types 6) 4)
+      (>= (tetris:sz-run types 6) 3)))
+
+(define (tetris:storm-heal!)
+  (hot-strategy:heal!)
+  (if (not (tetris:probe-place!))
+      (try
+        (hot-strategy:swap! "tetris:place-fn" *place-live* "storm-heal")
+        (catch (e) #f)))
+  (let ((v (try (tetris:place-fn 4 0) (catch (e) #f))))
+    (if (and (number? v) (< v 0))
+        (set! *place-live* *def-body*)
+        (set! *place-live* *place-body*)))
+  (set! *storm-on* 0)
+  (set! *strat-mid* 1)
+  (set! *strat-reason* "heal")
+  (tetris:explain! 1 "heal")
+  (list #t "heal"))
+
+; Swap the live slot onto the defensive worldline, or heal when the bag calms.
+; Hysteresis: enter at 4/6 or a run of 3; leave only when the next 6 hold <= 1 S/Z.
+(define (tetris:storm-update! types)
+  (if (tetris:storm? types)
+      (if (= *storm-on* 1)
+          (list #t "storm_sz")
+          (let ((r (tetris:apply-strategy! *def-body*)))
+            (if (and (pair? r) (equal? (car r) #t))
+                (begin
+                  (set! *storm-on* 1)
+                  (set! *strat-mid* 2)
+                  (set! *strat-reason* "storm_sz")
+                  (tetris:explain! 2 "storm_sz")
+                  (list #t "storm_sz"))
+                r)))
+      (if (and (= *storm-on* 1) (<= (tetris:sz-count types 6) 1))
+          (tetris:storm-heal!)
+          (list #f "calm"))))
 
 ; Landing row of pivot (y grows downward). -1 if the rotation does not fit.
 (define (landing-y type rot x)
@@ -151,7 +256,7 @@
             (lambda ()
               (let ((y (landing-y *ptype* rot x)))
                 (if (>= y 0)
-                    (let ((s (try (tetris:place-fn y *ptype*) (catch (e) #f))))
+                    (let ((s (tetris:cand-score y x)))
                       (if (and (number? s) (> s *best-s*))
                           (begin
                             (set! *best-s* s)
