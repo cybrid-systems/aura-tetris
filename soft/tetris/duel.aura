@@ -96,7 +96,7 @@
     (vector-set! s 13 *next-type*)
     (vector-set! s 14 *seq-i*)
     (let loop ((i 0))
-      (if (< i 200)
+      (if (< i *board-cap*)
           (begin
             (vector-set! b i (vector-ref *board* i))
             (loop (+ i 1)))
@@ -121,7 +121,7 @@
     (set! *next-type* (vector-ref s 13))
     (set! *seq-i* (vector-ref s 14))
     (let loop ((i 0))
-      (if (< i 200)
+      (if (< i *board-cap*)
           (begin
             (vector-set! *board* i (vector-ref b i))
             (loop (+ i 1)))
@@ -336,9 +336,36 @@
     (score-line score-tag)
     (status-line status-tag)))
 
+(define (duel:apply-width! body)
+  (let ((old *W*))
+    (let ((r (tetris:apply-rule! "tetris:rule-width" body "rule_width")))
+      ; apply-rule retargets the live matrix. Saved sides still use `old`.
+      (if (and (pair? r) (equal? (car r) #t) (not (= old *W*)))
+          (begin
+            (set! *board-l* (tetris:remap-board *board-l* old *W*))
+            (set! *board-r* (tetris:remap-board *board-r* old *W*))))
+      (if (and (pair? r) (equal? (car r) #t))
+          (set! *rule-phase* (if (= *W* 12) 1 0)))
+      r)))
+
+(define (duel:mutate-wide!)
+  (duel:apply-width! (if (= *W* 12) "(lambda () 10)" "(lambda () 12)")))
+
+(define (duel:mutate-cycle!)
+  (cond ((= *rule-phase* 0) (duel:mutate-wide!))
+        ((= *rule-phase* 1) (tetris:mutate-score!))
+        (#t
+         (duel:apply-width! "(lambda () 10)")
+         (tetris:apply-rule! "tetris:rule-score" *score-classic* "rule_score")
+         (set! *rule-phase* 0)
+         (set! *strat-reason* "rule_heal")
+         (tetris:explain! 4 "rule_heal")
+         (list #t "rule_heal"))))
+
 (define (tetris:duel-snapshot-text)
   (string-append
     "SNAP v1\n"
+    "WIDTH " (number->string *W*) "\n"
     (side-block 0 "BOARD" "PIECE" "NEXT" "HOLD" "SCORE" "STATUS")
     (side-block 1 "BOARD2" "PIECE2" "NEXT2" "HOLD2" "SCORE2" "STATUS2")
     "PILOT side=" (if (= *pilot* 0) "L" "R") "\n"
@@ -349,6 +376,7 @@
     " reason=" *strat-reason* "\n"
     "EXPLAIN mid=" (number->string *explain-mid*)
     " reason=" *explain-reason* "\n"
+    (tetris:race-snap-extra)
     "END\n"))
 
 (define (emit-snap!)
@@ -357,7 +385,7 @@
 (define (fp-of which)
   (load-side! which)
   (let loop ((i 0) (acc 0))
-    (if (>= i 200)
+    (if (>= i *board-cap*)
         (+ acc (+ (* *px* 3)
                   (+ (* *prot* 17)
                      (+ (* *py* 19)
@@ -399,7 +427,7 @@
 
 (define (fp-live)
   (let loop ((i 0) (acc 0))
-    (if (>= i 200)
+    (if (>= i *board-cap*)
         (+ acc (+ (* *px* 3)
                   (+ (* *prot* 17)
                      (+ (* *py* 19)
@@ -511,9 +539,29 @@
                    (side-auto! (if (= *pilot* 0) 1 0)))
                   ((string=? verb "restart")
                    (duel:boot!))
+                  ((string=? verb "race")
+                   (load-side! *pilot*)
+                   (tetris:race!)
+                   (set! *winner-mid* *race-mid*)
+                   (set! *winner-side* *race-side*)
+                   (set! *winner-reason* *race-reason*)
+                   (save-side! *pilot*))
+                  ((string=? verb "mutate")
+                   (duel:mutate-cycle!))
+                  ((string=? verb "mutate-wide")
+                   (duel:mutate-wide!))
+                  ((string=? verb "mutate-score")
+                   (tetris:mutate-score!))
+                  ((string=? verb "propose")
+                   (tetris:propose!))
                   (#t
                    (apply-pilot! verb)))
-                (if (not (string=? verb "restart"))
+                (if (not (or (string=? verb "restart")
+                             (string=? verb "race")
+                             (string=? verb "mutate")
+                             (string=? verb "mutate-wide")
+                             (string=? verb "mutate-score")
+                             (string=? verb "propose")))
                     (duel:after-step!))
                 (list 0)))))))
 
@@ -537,3 +585,8 @@
                         (begin
                           (emit-snap!)
                           (loop)))))))))))
+
+; Same as play.aura: build closures before race.aura or cons/* go missing.
+(load "/workspace/aura-tetris/soft/tetris/race.aura")
+(load "/workspace/aura-tetris/soft/tetris/rules.aura")
+(load "/workspace/aura-tetris/soft/tetris/propose.aura")
