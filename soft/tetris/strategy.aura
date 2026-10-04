@@ -176,7 +176,7 @@
                    (set! *strat-mid* 1)
                    (set! *strat-reason* "heal")
                    (tetris:explain! 1 "heal")
-                   (list #f "probe"))))))))
+                   (list #f "probe")))))))))
 
 ; One file drop is the M1 propose hook (no network, no score field).
 ; The host or an LLM writes a lambda string; Soft still gates it.
