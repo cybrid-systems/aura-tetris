@@ -1,0 +1,48 @@
+; Live propose. Soft does not speak HTTP. The host helper
+; scripts/propose_minimax.py (or a fixture file) writes a
+; (lambda (row piece) ...) string. Soft gates it with the M1
+; bad-body list, probes (tetris:place-fn 4 0), and swap! or heal!.
+; Stamps are propose_ok / propose_reject / propose_heal.
+; This is hot-strategy, not Restricted mode and not AOT.
+
+(define (tetris:propose-stamp! ok? tag)
+  (set! *strat-mid* 3)
+  (set! *strat-reason* tag)
+  (tetris:explain! 3 tag)
+  (list ok? tag))
+
+(define (tetris:propose-body! body)
+  (let ((r (tetris:apply-strategy! body)))
+    (cond
+      ((and (pair? r) (equal? (car r) #t))
+       (tetris:propose-stamp! #t "propose_ok"))
+      ((and (pair? r) (pair? (cdr r)) (equal? (car (cdr r)) "probe"))
+       (tetris:propose-stamp! #f "propose_heal"))
+      (#t
+       (tetris:propose-stamp! #f "propose_reject")))))
+
+(define (tetris:propose-file! path)
+  (let ((body (try (read-file path) (catch (e) #f))))
+    (if (not (string? body))
+        (tetris:propose-stamp! #f "propose_reject")
+        (tetris:propose-body! body))))
+
+; HTTP stays in the host Python helper. Soft only reads the file it wrote.
+(define (tetris:propose-host!)
+  (let ((out "/tmp/tetris_strategy.lambda"))
+    (try
+      (sh (string-append
+           "python3 /workspace/aura-tetris/scripts/propose_minimax.py "
+           out
+           " >/tmp/tetris_propose.stdout 2>/tmp/tetris_propose.stderr"))
+      (catch (e) #f))
+    (let ((body (try (read-file out) (catch (e) #f))))
+      (if (not (string? body))
+          (tetris:propose-stamp! #f "propose_reject")
+          (tetris:propose-body! body)))))
+
+(define (tetris:propose!)
+  (let ((path (getenv "TETRIS_PROPOSE_FILE")))
+    (if (and (string? path) (> (string-length path) 0))
+        (tetris:propose-file! path)
+        (tetris:propose-host!))))
