@@ -16,10 +16,24 @@
 /* Thin ANSI viewport. Soft owns the board, the active piece, next, hold,
    score, lines, and level. This process only reads keys and blits SNAP. */
 
-enum { H = 20, W = 10, SNAP_CAP = 1 << 16, QCAP = 32 };
+enum { H = 20, MAXW = 12, SNAP_CAP = 1 << 16, QCAP = 32 };
 
 typedef struct {
-    char board[H][W];
+    int id;
+    char name[16];
+    int rot;
+    int px;
+    int py;
+    int lines;
+    int height;
+    int ncells;
+    int cx[8];
+    int cy[8];
+} Ghost;
+
+typedef struct {
+    char board[H][MAXW];
+    int width;
     int active;
     int type;
     int rot;
@@ -38,7 +52,7 @@ typedef struct {
     int mid;
     char reason[32];
     int has2;
-    char board2[H][W];
+    char board2[H][MAXW];
     int active2;
     int type2;
     int rot2;
@@ -60,6 +74,10 @@ typedef struct {
     char winner_reason[32];
     int explain_mid;
     char explain_reason[32];
+    Ghost ghosts[4];
+    int nghosts;
+    char worldline[32];
+    int world_backend;
     int accepted;
 } Snap;
 
@@ -248,6 +266,8 @@ static int parse_snap(const char *text, Snap *s) {
     snprintf(s->explain_reason, sizeof(s->explain_reason), "boot");
     snprintf(s->winner_side, sizeof(s->winner_side), "-");
     snprintf(s->winner_reason, sizeof(s->winner_reason), "boot");
+    snprintf(s->worldline, sizeof(s->worldline), "none");
+    s->width = 10;
     int row = 0;
     int row2 = 0;
     int saw_board = 0;
@@ -265,6 +285,38 @@ static int parse_snap(const char *text, Snap *s) {
         line[len] = '\0';
         if (strcmp(line, "SNAP v1") == 0) {
             /* header */
+        } else if (strncmp(line, "WIDTH ", 6) == 0) {
+            int w = atoi(line + 6);
+            if (w >= 4 && w <= MAXW)
+                s->width = w;
+        } else if (strncmp(line, "WORLD ", 6) == 0) {
+            parse_word(line, "line=", s->worldline, sizeof(s->worldline));
+            parse_kv_int(line, "backend=", &s->world_backend);
+        } else if (strncmp(line, "GHOST ", 6) == 0) {
+            if (s->nghosts < 4) {
+                Ghost *g = &s->ghosts[s->nghosts];
+                memset(g, 0, sizeof(*g));
+                parse_kv_int(line, "id=", &g->id);
+                parse_word(line, "name=", g->name, sizeof(g->name));
+                parse_kv_int(line, "rot=", &g->rot);
+                parse_kv_int(line, "x=", &g->px);
+                parse_kv_int(line, "y=", &g->py);
+                parse_kv_int(line, "lines=", &g->lines);
+                parse_kv_int(line, "height=", &g->height);
+                const char *cells = strstr(line, "cells=");
+                if (cells != NULL) {
+                    Snap tmp;
+                    memset(&tmp, 0, sizeof(tmp));
+                    if (parse_cells(cells + 6, &tmp) == 0) {
+                        g->ncells = tmp.ncells;
+                        for (int ci = 0; ci < tmp.ncells && ci < 8; ci++) {
+                            g->cx[ci] = tmp.cx[ci];
+                            g->cy[ci] = tmp.cy[ci];
+                        }
+                    }
+                }
+                s->nghosts++;
+            }
         } else if (strcmp(line, "BOARD") == 0) {
             saw_board = 1;
             saw_board2 = 0;
@@ -275,14 +327,14 @@ static int parse_snap(const char *text, Snap *s) {
             row2 = 0;
         } else if (saw_board2 && row2 < H && strncmp(line, "PIECE2 ", 7) != 0 &&
                    strncmp(line, "PIECE ", 6) != 0) {
-            if ((int)strlen(line) < W)
+            if ((int)strlen(line) < s->width)
                 return 0;
-            memcpy(s->board2[row2], line, (size_t)W);
+            memcpy(s->board2[row2], line, (size_t)s->width);
             row2++;
         } else if (saw_board && row < H && strncmp(line, "PIECE ", 6) != 0) {
-            if ((int)strlen(line) < W)
+            if ((int)strlen(line) < s->width)
                 return 0;
-            memcpy(s->board[row], line, (size_t)W);
+            memcpy(s->board[row], line, (size_t)s->width);
             row++;
         } else if (strncmp(line, "PIECE2 ", 7) == 0) {
             saw_board2 = 0;
@@ -409,18 +461,33 @@ static int cell_at2(const Snap *s, int x, int y, int *type_out) {
     return 0;
 }
 
+static int ghost_at(const Snap *s, int x, int y, char *letter) {
+    for (int i = 0; i < s->nghosts; i++) {
+        const Ghost *g = &s->ghosts[i];
+        for (int c = 0; c < g->ncells; c++) {
+            if (g->cx[c] == x && g->cy[c] == y) {
+                *letter = (g->name[0] != '\0') ? g->name[0] : '?';
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 static int draw_board_row(char *frame, size_t cap, size_t *n, const Snap *s, int y, int right) {
     int room = (int)(cap - *n);
     int wr = snprintf(frame + *n, (size_t)room, "|");
     if (wr < 0 || wr >= room)
         return -1;
     *n += (size_t)wr;
-    for (int x = 0; x < W; x++) {
+    for (int x = 0; x < s->width; x++) {
         int pt = 0;
         const char *col;
         const char *glyph;
         int live;
         char locked;
+        char gbuf[3];
+        char gl = 0;
         if (right) {
             live = cell_at2(s, x, y, &pt);
             locked = s->board2[y][x];
@@ -434,6 +501,12 @@ static int draw_board_row(char *frame, size_t cap, size_t *n, const Snap *s, int
         } else if (locked >= '1' && locked <= '7') {
             col = piece_color(locked - '1');
             glyph = "##";
+        } else if (!right && ghost_at(s, x, y, &gl)) {
+            col = "\033[2;33m";
+            gbuf[0] = gl;
+            gbuf[1] = gl;
+            gbuf[2] = '\0';
+            glyph = gbuf;
         } else {
             col = "\033[2m";
             glyph = "..";
@@ -493,12 +566,14 @@ static void blit(int tty, const Snap *s, int paused) {
         wrd = snprintf(frame + n, (size_t)room,
                        "L score %d lines %d lv %d    R score %d lines %d lv %d\n"
                        "L next %s hold %s          R next %s hold %s\n"
-                       "mid %d %s    a/d move  s soft  w hard  z/q ccw  e/x cw\n"
-                       "c hold  f auto both  t toggle pilot  p pause  r restart  Esc/Q quit\n",
+                       "mid %d %s  world %s  winner %d %s %s\n"
+                       "a/d move  s soft  w hard  z/q ccw  e/x cw  c hold  f auto\n"
+                       "t toggle  v race  m mutate  u propose  p pause  r restart  Esc/Q quit\n",
                        s->score, s->lines, s->level, s->score2, s->lines2, s->level2,
                        piece_name(s->next), piece_name(s->hold),
                        piece_name(s->next2), piece_name(s->hold2),
-                       s->mid, s->reason);
+                       s->mid, s->reason, s->worldline,
+                       s->winner_mid, s->winner_side, s->winner_reason);
         if (wrd < 0 || wrd >= room)
             return;
         n += (size_t)wrd;
@@ -511,9 +586,10 @@ static void blit(int tty, const Snap *s, int paused) {
         return;
     }
     int wr = snprintf(frame + n, (size_t)room,
-                      "\033[2J\033[H\033[1maura-tetris\033[0m  %s\n"
-                      "+--------------------+\n",
-                      banner);
+                      "\033[2J\033[H\033[1maura-tetris\033[0m  %s  %s\n"
+                      "%s",
+                      banner, s->worldline,
+                      s->width > 10 ? "+------------------------+\n" : "+--------------------+\n");
     if (wr < 0 || wr >= room)
         return;
     n += (size_t)wr;
@@ -524,16 +600,24 @@ static void blit(int tty, const Snap *s, int paused) {
             return;
         n += (size_t)wr;
         room -= wr;
-        for (int x = 0; x < W; x++) {
+        for (int x = 0; x < s->width; x++) {
             int pt = 0;
             const char *col;
             const char *glyph;
+            char gbuf[3];
+            char gl = 0;
             if (cell_at(s, x, y, &pt)) {
                 col = piece_color(pt);
                 glyph = "[]";
             } else if (s->board[y][x] >= '1' && s->board[y][x] <= '7') {
                 col = piece_color(s->board[y][x] - '1');
                 glyph = "##";
+            } else if (ghost_at(s, x, y, &gl)) {
+                col = "\033[2;33m";
+                gbuf[0] = gl;
+                gbuf[1] = gl;
+                gbuf[2] = '\0';
+                glyph = gbuf;
             } else {
                 col = "\033[2m";
                 glyph = "..";
@@ -551,15 +635,17 @@ static void blit(int tty, const Snap *s, int paused) {
         room -= wr;
     }
     wr = snprintf(frame + n, (size_t)room,
-                  "+--------------------+\n"
-                  "score %d   lines %d   level %d   tick %d\n"
+                  "%s"
+                  "score %d   lines %d   level %d   tick %d  w=%d\n"
                   "next %s   hold %s   mid %d   %s\n"
-                  "a/d move  s soft  w/space hard  z/q ccw  e/x cw\n"
-                  "c hold  f strategy-step  p pause  r restart  Esc/Q quit\n"
-                  "explain mid %d  %s\n",
-                  s->score, s->lines, s->level, s->tick,
+                  "a/d move  s soft  w/space hard  z/q ccw  e/x cw  c hold\n"
+                  "f strategy  v race  m mutate  u propose  p pause  r restart  Esc/Q quit\n"
+                  "explain mid %d  %s   winner mid %d %s %s\n",
+                  s->width > 10 ? "+------------------------+\n" : "+--------------------+\n",
+                  s->score, s->lines, s->level, s->tick, s->width,
                   piece_name(s->next), piece_name(s->hold), s->mid, s->reason,
-                  s->explain_mid, s->explain_reason);
+                  s->explain_mid, s->explain_reason,
+                  s->winner_mid, s->winner_side, s->winner_reason);
     if (wr < 0 || wr >= room)
         return;
     n += (size_t)wr;
@@ -588,7 +674,10 @@ enum {
     VK_PAUSE,
     VK_RESTART,
     VK_QUIT,
-    VK_TOGGLE
+    VK_TOGGLE,
+    VK_RACE,
+    VK_MUTATE,
+    VK_PROPOSE
 };
 
 static const char *verb_of(int k) {
@@ -604,6 +693,9 @@ static const char *verb_of(int k) {
     case VK_RESTART: return "restart";
     case VK_QUIT: return "quit";
     case VK_TOGGLE: return "toggle";
+    case VK_RACE: return "race";
+    case VK_MUTATE: return "mutate";
+    case VK_PROPOSE: return "propose";
     default: return NULL;
     }
 }
@@ -633,6 +725,12 @@ static int map_key(unsigned char ch) {
     case 'T': return VK_TOGGLE;
     case 'f':
     case 'F': return VK_AUTO;
+    case 'v':
+    case 'V': return VK_RACE;
+    case 'm':
+    case 'M': return VK_MUTATE;
+    case 'u':
+    case 'U': return VK_PROPOSE;
     case 'p':
     case 'P': return VK_PAUSE;
     case 'r':
@@ -793,7 +891,7 @@ int main(int argc, char **argv) {
             continue;
         }
         /* tick is only queued while alive, so a dead board only accepts restart/toggle. */
-        if (!snap.alive && k != VK_RESTART && k != VK_TOGGLE) {
+        if (!snap.alive && k != VK_RESTART && k != VK_TOGGLE && k != VK_RACE && k != VK_MUTATE && k != VK_PROPOSE) {
             blit(tty, &snap, paused);
             sleep_ms(40);
             continue;
