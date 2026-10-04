@@ -23,6 +23,16 @@ else
 fi
 
 EXTRA=()
+# MiniMax key stays on the host path the env file already names.
+if [[ -d /home/box/.config/aura-build ]]; then
+  EXTRA+=(-v /home/box/.config/aura-build:/home/box/.config/aura-build:ro)
+fi
+if [[ -n "${TETRIS_PROPOSE_FILE:-}" ]]; then
+  EXTRA+=(-e TETRIS_PROPOSE_FILE)
+  if [[ -f "${TETRIS_PROPOSE_FILE}" ]]; then
+    EXTRA+=(-v "${TETRIS_PROPOSE_FILE}:${TETRIS_PROPOSE_FILE}:ro")
+  fi
+fi
 if [[ -n "${TETRIS_STRATEGY_FILE:-}" ]]; then
   EXTRA+=(-e TETRIS_STRATEGY_FILE)
   if [[ -f "${TETRIS_STRATEGY_FILE}" ]]; then
