@@ -1,0 +1,1 @@
+(lambda (row piece) (if (number? row) (+ row 3) 1))

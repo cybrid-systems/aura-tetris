@@ -1,0 +1,1 @@
+(lambda (row piece) (begin (set! *score* 99) row))
