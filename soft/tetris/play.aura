@@ -143,6 +143,7 @@
 (define (tetris:snapshot-text)
   (string-append
     "SNAP v1\n"
+    "WIDTH " (number->string *W*) "\n"
     "BOARD\n"
     (board-snap)
     "PIECE active=" (number->string *active*)
@@ -162,6 +163,7 @@
     " reason=" *strat-reason* "\n"
     "EXPLAIN mid=" (number->string *explain-mid*)
     " reason=" *explain-reason* "\n"
+    (tetris:race-snap-extra)
     "END\n"))
 
 (define (emit-snap!)
@@ -187,6 +189,11 @@
          (let ((m (tetris:choose-move)))
            (if (not (or (string=? m "none") (string=? m "auto")))
                (apply-verb! m))))
+        ((string=? v "race") (tetris:race!))
+        ((string=? v "mutate") (tetris:mutate-cycle!))
+        ((string=? v "mutate-wide") (tetris:mutate-wide!))
+        ((string=? v "mutate-score") (tetris:mutate-score!))
+        ((string=? v "propose") (tetris:propose!))
         (#t #f)))
 
 ; INPUT <verb>
@@ -225,4 +232,9 @@
                             (emit-snap!)
                             (loop))))))))))))
 
+; Load M3 after the play closures are built. Loading race.aura first
+; makes later closures miss primitives (cons / null? / *).
+(load "/workspace/aura-tetris/soft/tetris/race.aura")
+(load "/workspace/aura-tetris/soft/tetris/rules.aura")
+(load "/workspace/aura-tetris/soft/tetris/propose.aura")
 (tetris:play!)
