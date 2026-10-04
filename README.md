@@ -15,8 +15,17 @@ project under `examples/dogfood/`.
 ## Play
 
 ```bash
-bash scripts/play.sh
+bash scripts/play.sh   # one board
+bash scripts/duel.sh   # two boards, same bag, split ANSI
 ```
+
+`scripts/duel.sh` is the M2 duel. Soft runs two matrices on one shared 7-bag.
+The left worldline is aggressive (`tetris:place-agg`, deeper and righter).
+The right worldline is defensive (`tetris:place-def`, shallower and lefter).
+Keys pilot the left board until `t` toggles. The other board auto-plays its
+place-fn on each gravity tick. `f` auto-steps both. C only blits `BOARD` and
+`BOARD2`. Score and the winner `mid` / `reason` (`lines_lead`, `survive`, …)
+stay in Soft.
 
 Soft seed (`set-code` of `tetris:place-fn`) runs once at startup inside
 `ghcr.io/cybrid-systems/dev:v1.0.9`. Then:
@@ -30,6 +39,7 @@ Soft seed (`set-code` of `tetris:place-fn`) runs once at startup inside
 | e / x | `cw` | rotate clockwise |
 | c | `hold` | hold (once per piece) |
 | f | `auto` | one step of `tetris:choose-move` |
+| t | `toggle` | duel only: pilot the other board |
 | p | — | pause (C stops sending `tick`) |
 | r | `restart` | Soft reset, same strategy slot |
 | Esc / Q | `quit` | leave |
@@ -55,6 +65,7 @@ runs Soft inside Docker with `--entrypoint /usr/local/bin/gosu`). Needs
 ```bash
 bash scripts/smoke_soft.sh    # M0: LINES=4 SCORE=400 TETRIS_M0_OK
 bash scripts/smoke_m1.sh      # M0 + strategy gate/swap/heal + SNAP pipe
+bash scripts/smoke_m2.sh      # duel + explain + storm → TETRIS_M2_SMOKE_OK
 bash scripts/demo_soft.sh     # headless ASCII, ends TETRIS_DEMO_DONE
 ```
 
@@ -85,7 +96,11 @@ sudo docker run --rm --entrypoint /usr/local/bin/gosu \
 | `soft/tetris/play.aura` | interactive SNAP/INPUT loop, seeded 7-bag |
 | `soft/tetris/m0_smoke.aura` | deterministic line-clear tokens |
 | `soft/tetris/m1_strategy_smoke.aura` | swap + probe + heal → `TETRIS_M1_STRATEGY_OK` |
-| `c/play.c` | ANSI viewport (blit + keys only) |
+| `soft/tetris/duel.aura` | two boards, one bag, aggressive vs defensive worldlines |
+| `soft/tetris/m2_duel_smoke.aura` | `TETRIS_M2_DUEL_OK` |
+| `soft/tetris/m2_explain_smoke.aura` | `TETRIS_M2_EXPLAIN_OK` |
+| `soft/tetris/m2_storm_smoke.aura` | `TETRIS_M2_STORM_OK` |
+| `c/play.c` | ANSI viewport (blit + keys only; `--duel` splits the frame) |
 | `examples/dogfood/` | GOAL / stub / verify / dogfood.json for `aura-build llm-dogfood` |
 
 Score: `1/2/3/4` lines → `100/300/500/800 × level`; `level = 1 + lines/10`.
@@ -122,9 +137,11 @@ License: Apache-2.0
 也不是原生插件热更新。详见 `docs/DESIGN.md`。
 
 ```bash
-bash scripts/play.sh         # 游玩。q/z 逆时针，e/x 顺时针，Esc 或 Q 退出
+bash scripts/play.sh         # 单盘。q/z 逆时针，e/x 顺时针，Esc 或 Q 退出
+bash scripts/duel.sh         # 双盘同袋。t 换边，f 两边各走一步
 bash scripts/smoke_soft.sh   # LINES=4 SCORE=400 TETRIS_M0_OK
 bash scripts/smoke_m1.sh     # M0 + 策略门 + SNAP 管道
+bash scripts/smoke_m2.sh     # 对决 + explain + storm
 bash scripts/demo_soft.sh    # ASCII 自动演示，结尾 TETRIS_DEMO_DONE
 ```
 
