@@ -1,0 +1,14 @@
+{
+  "label": "tetris-m0",
+  "expect": "LINES=4\nSCORE=400\nTETRIS_M0_OK",
+  "expect_res": [
+    "LINES\\s*=\\s*4",
+    "SCORE\\s*=\\s*400",
+    "TETRIS_M0_OK"
+  ],
+  "source_res": [
+    "\\(define\\s+\\(score-for(\\s|\\))",
+    "\\(define\\s+\\(tetris:(clear-lines!|hard-drop!)(\\s|\\))"
+  ],
+  "user_extra": "You MUST implement real Tetris clear/score helpers: (define (score-for n) ...) using 100/300/500/800 * level for n=1/2/3/4, and either (define (tetris:clear-lines! ...) ...) or (define (tetris:hard-drop! ...) ...) so four single-line clears at level 1 yield LINES=4 SCORE=400 then print TETRIS_M0_OK. Do not only hardcode the three display strings. Prefer display/newline/set!. No extra prose outside the code fence."
+}

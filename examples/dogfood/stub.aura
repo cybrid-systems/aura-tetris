@@ -1,0 +1,22 @@
+; Intentionally broken — wrong clear count and score math for dogfood repair.
+(define *lines* 0)
+(define *score* 0)
+(define *level* 1)
+
+; Wrong: awards 50 per line and pretends 2 lines
+(define (score-for n) (* 50 n))
+(define (tetris:clear-lines! n)
+  (set! *lines* (+ *lines* n))
+  (set! *score* (+ *score* (score-for n)))
+  n)
+
+(define (tetris:hard-drop!)
+  ; stub "clears" 2 lines each call with wrong score
+  (tetris:clear-lines! 2)
+  2)
+
+(tetris:hard-drop!)
+(tetris:hard-drop!)
+(display "LINES=")(display (number->string *lines*))(newline)
+(display "SCORE=")(display (number->string *score*))(newline)
+(display "TETRIS_M0_BAD")(newline)

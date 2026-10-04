@@ -1,0 +1,29 @@
+; Minimal golden candidate for dogfood verify (four single-line clears @ level 1).
+(define *lines* 0)
+(define *score* 0)
+(define *level* 1)
+
+(define (score-for n)
+  (cond ((= n 1) (* 100 *level*))
+        ((= n 2) (* 300 *level*))
+        ((= n 3) (* 500 *level*))
+        ((= n 4) (* 800 *level*))
+        (#t 0)))
+
+(define (tetris:clear-lines! n)
+  (set! *lines* (+ *lines* n))
+  (set! *score* (+ *score* (score-for n)))
+  (set! *level* (+ 1 (quotient *lines* 10)))
+  n)
+
+(define (tetris:hard-drop!)
+  (tetris:clear-lines! 1)
+  1)
+
+(tetris:hard-drop!)
+(tetris:hard-drop!)
+(tetris:hard-drop!)
+(tetris:hard-drop!)
+(display "LINES=")(display (number->string *lines*))(newline)
+(display "SCORE=")(display (number->string *score*))(newline)
+(display "TETRIS_M0_OK")(newline)
