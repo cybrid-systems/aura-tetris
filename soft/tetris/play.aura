@@ -57,10 +57,12 @@
     (play-spawn-type! t)))
 
 (define (play-lock!)
-  (tetris:lock!)
-  (set! *hold-lock* 0)
-  (if (= *alive* 1)
-      (play-spawn-next!)))
+  (let ((before *lines*))
+    (tetris:lock!)
+    (set! *hold-lock* 0)
+    (tetris:explain! *strat-mid* (if (> *lines* before) "lines_lead" "lock"))
+    (if (= *alive* 1)
+        (play-spawn-next!))))
 
 (define (drop-interval)
   (let ((k (- 16 *level*)))
@@ -158,6 +160,8 @@
     " tick=" (number->string *tick*) "\n"
     "MID mid=" (number->string *strat-mid*)
     " reason=" *strat-reason* "\n"
+    "EXPLAIN mid=" (number->string *explain-mid*)
+    " reason=" *explain-reason* "\n"
     "END\n"))
 
 (define (emit-snap!)
@@ -169,9 +173,10 @@
         ((string=? v "soft") (tetris:soft-drop!))
         ((string=? v "hard")
          (if (= *active* 1)
-             (begin
+             (let ((before *lines*))
                (tetris:hard-drop!)
                (set! *hold-lock* 0)
+               (tetris:explain! *strat-mid* (if (> *lines* before) "lines_lead" "lock"))
                (if (= *alive* 1) (play-spawn-next!)))))
         ((string=? v "cw") (tetris:rotate!))
         ((string=? v "ccw") (tetris:rotate-ccw!))

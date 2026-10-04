@@ -1,5 +1,5 @@
 ; Deterministic M0 smoke:
-; Four times: fill bottom cols 0..5, hard-drop horizontal I into 6..9 -> clear 1 line.
+; Four times: fill bottom cols 0..5, hard-drop horizontal I into 6..9 → clear 1 line.
 ; Expect LINES=4 SCORE=400 (level 1: 4 * 100).
 (load "/workspace/aura-tetris/soft/tetris/world.aura")
 

@@ -11,6 +11,7 @@
         (display "TICK ")
         (display (number->string (- 21 n)))
         (newline)
+        ; simple auto-play: nudge toward center-ish, rotate occasionally, soft-drop
         (cond ((= (modulo n 5) 0) (tetris:rotate!))
               ((= (modulo n 3) 0) (tetris:move! -1))
               ((= (modulo n 3) 1) (tetris:move! 1)))
