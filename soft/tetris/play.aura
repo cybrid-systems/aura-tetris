@@ -1,0 +1,223 @@
+; Interactive Soft play loop. stdin = INPUT lines from the C viewport.
+; stdout = SNAP v1 ... END only (Soft owns board, piece, next, score).
+; C blits and feeds keys. Logs go to stderr.
+(load "/workspace/aura-tetris/soft/tetris/world.aura")
+(load "/workspace/aura-tetris/soft/tetris/strategy.aura")
+(require "std/string" all:)
+(require "std/process" all:)
+
+(define *next-type* 0)
+(define *hold-type* -1)
+(define *hold-lock* 0)
+(define *bag* '())
+(define *rng* 12345)
+(define *drop-acc* 0)
+
+(define (elog! msg)
+  (try (sh (string-append "echo " msg " >&2")) (catch (e) 0)))
+
+(define (rng-next!)
+  (set! *rng* (modulo (+ (* (modulo *rng* 65536) 251) 17) 65536))
+  *rng*)
+
+(define (rev xs)
+  (let loop ((ys xs) (acc '()))
+    (if (null? ys) acc
+        (loop (cdr ys) (cons (car ys) acc)))))
+
+(define (drop-nth xs i)
+  (let loop ((ys xs) (j 0) (pre '()))
+    (if (null? ys)
+        (cons 0 '())
+        (if (= j i)
+            (cons (car ys) (append (rev pre) (cdr ys)))
+            (loop (cdr ys) (+ j 1) (cons (car ys) pre))))))
+
+(define (shuffle-bag)
+  (let loop ((src (list 0 1 2 3 4 5 6)) (n 7) (acc '()))
+    (if (= n 0)
+        acc
+        (let* ((i (modulo (rng-next!) n))
+               (pr (drop-nth src i)))
+          (loop (cdr pr) (- n 1) (cons (car pr) acc))))))
+
+(define (take-bag!)
+  (if (null? *bag*)
+      (set! *bag* (shuffle-bag)))
+  (let ((t (car *bag*)))
+    (set! *bag* (cdr *bag*))
+    t))
+
+(define (play-spawn-type! type)
+  (tetris:spawn! type))
+
+(define (play-spawn-next!)
+  (let ((t *next-type*))
+    (set! *next-type* (take-bag!))
+    (play-spawn-type! t)))
+
+(define (play-lock!)
+  (tetris:lock!)
+  (set! *hold-lock* 0)
+  (if (= *alive* 1)
+      (play-spawn-next!)))
+
+(define (drop-interval)
+  (let ((k (- 16 *level*)))
+    (if (< k 2) 2 k)))
+
+(define (play-gravity!)
+  (if (= *alive* 0)
+      #f
+      (begin
+        (set! *tick* (+ *tick* 1))
+        (set! *drop-acc* (+ *drop-acc* 1))
+        (if (< *drop-acc* (drop-interval))
+            #t
+            (begin
+              (set! *drop-acc* 0)
+              (if (= *active* 0)
+                  (play-spawn-next!)
+                  (if (not (tetris:soft-drop!))
+                      (play-lock!))))))))
+
+(define (play-hold!)
+  (if (or (= *alive* 0) (= *active* 0) (= *hold-lock* 1))
+      #f
+      (begin
+        (set! *hold-lock* 1)
+        (if (< *hold-type* 0)
+            (begin
+              (set! *hold-type* *ptype*)
+              (set! *active* 0)
+              (play-spawn-next!))
+            (let ((t *hold-type*))
+              (set! *hold-type* *ptype*)
+              (set! *active* 0)
+              (play-spawn-type! t))))))
+
+(define (play-reset!)
+  (tetris:reset!)
+  (set! *rng* 12345)
+  (set! *bag* (shuffle-bag))
+  (set! *hold-type* -1)
+  (set! *hold-lock* 0)
+  (set! *drop-acc* 0)
+  (set! *next-type* (take-bag!))
+  (play-spawn-type! (take-bag!))
+  *tick*)
+
+(define (row-snap y)
+  (let loop ((x 0) (acc ""))
+    (if (>= x *W*)
+        acc
+        (let ((v (cell-ref x y)))
+          (loop (+ x 1)
+                (string-append acc
+                               (if (= v 0) "." (number->string v))))))))
+
+(define (board-snap)
+  (let loop ((y 0) (acc ""))
+    (if (>= y *H*)
+        acc
+        (loop (+ y 1)
+              (string-append acc (row-snap y) "\n")))))
+
+(define (cells-snap)
+  (if (= *active* 0)
+      ""
+      (let loop ((cs (shape-cells *ptype* *prot*)) (acc ""))
+        (if (null? cs)
+            acc
+            (let* ((c (car cs))
+                   (cx (+ *px* (nth c 0)))
+                   (cy (+ *py* (nth c 1)))
+                   (bit (string-append (number->string cx) "," (number->string cy))))
+              (loop (cdr cs)
+                    (if (string=? acc "")
+                        bit
+                        (string-append acc ";" bit))))))))
+
+(define (tetris:snapshot-text)
+  (string-append
+    "SNAP v1\n"
+    "BOARD\n"
+    (board-snap)
+    "PIECE active=" (number->string *active*)
+    " type=" (number->string *ptype*)
+    " rot=" (number->string *prot*)
+    " x=" (number->string *px*)
+    " y=" (number->string *py*)
+    " cells=" (cells-snap) "\n"
+    "NEXT " (number->string *next-type*) "\n"
+    "HOLD " (number->string *hold-type*) "\n"
+    "SCORE score=" (number->string *score*)
+    " lines=" (number->string *lines*)
+    " level=" (number->string *level*) "\n"
+    "STATUS alive=" (number->string *alive*)
+    " tick=" (number->string *tick*) "\n"
+    "MID mid=" (number->string *strat-mid*)
+    " reason=" *strat-reason* "\n"
+    "END\n"))
+
+(define (emit-snap!)
+  (display (tetris:snapshot-text)))
+
+(define (apply-verb! v)
+  (cond ((string=? v "left") (tetris:move! -1))
+        ((string=? v "right") (tetris:move! 1))
+        ((string=? v "soft") (tetris:soft-drop!))
+        ((string=? v "hard")
+         (if (= *active* 1)
+             (begin
+               (tetris:hard-drop!)
+               (set! *hold-lock* 0)
+               (if (= *alive* 1) (play-spawn-next!)))))
+        ((string=? v "cw") (tetris:rotate!))
+        ((string=? v "ccw") (tetris:rotate-ccw!))
+        ((string=? v "hold") (play-hold!))
+        ((string=? v "tick") (play-gravity!))
+        ((string=? v "restart") (play-reset!))
+        ((string=? v "auto")
+         (let ((m (tetris:choose-move)))
+           (if (not (or (string=? m "none") (string=? m "auto")))
+               (apply-verb! m))))
+        (#t #f)))
+
+; INPUT <verb>
+(define (handle-line! line)
+  (let ((parts (string-split line " ")))
+    (if (or (null? parts) (not (string=? (car parts) "INPUT")))
+        (list 0)
+        (let ((verb (if (null? (cdr parts)) "" (car (cdr parts)))))
+          (if (string=? verb "quit")
+              (list 1)
+              (begin
+                (apply-verb! verb)
+                (list 0)))))))
+
+(define (tetris:play!)
+  (let ((seeded (tetris:strategy-seed!)))
+    (if (not (and (pair? seeded) (equal? (car seeded) #t)))
+        (begin
+          (elog! "TETRIS_PLAY_SEED_FAIL")
+          (error "tetris play strategy seed failed"))
+        (begin
+          (play-reset!)
+          ; Authoritative frame before any INPUT. Logs stay off stdout.
+          (emit-snap!)
+          (elog! "TETRIS_PLAY_READY")
+          (let loop ()
+            (let ((line (read-line)))
+              (if (not (string? line))
+                  (begin (elog! "TETRIS_PLAY_EOF") (void))
+                  (begin
+                    (tetris:maybe-propose!)
+                    (let ((res (handle-line! line)))
+                      (if (= (car res) 1)
+                          (begin (elog! "TETRIS_PLAY_QUIT") (void))
+                          (begin
+                            (emit-snap!)
+                            (loop))))))))))))
+
+(tetris:play!)
