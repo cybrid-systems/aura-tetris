@@ -160,6 +160,85 @@ bash scripts/duel.sh
 bash scripts/smoke_m2.sh
 ```
 
+
+## M3 — race, rule mutate, propose
+
+Three more live loops. None of them teach C the rules, and none of them
+are Restricted mode or `std/hot-update`.
+
+### Quad worldline race
+
+`INPUT race` (key `v`) scores one landing of the active piece, or the
+next piece if nothing is active, on the locked matrix. Four objectives:
+
+| id | name | pick |
+|----|------|------|
+| 1 | agg | deeper pivot, then righter |
+| 2 | def | shallower pivot, then lefter |
+| 3 | hole | fewer new holes under the piece, then lefter |
+| 4 | hunt | more completed lines, then fewer new holes, then righter |
+
+Soft `select-best` compares those four landings by expected lines, then
+by lower aggregate column height, then by the earlier id. SNAP adds
+`GHOST` lines (the four resting shapes), `WINNER mid=` `side=` `reason=lines_then_height`,
+and `WORLD line=`.
+
+Honesty about fibers: the candidate list is built once on the caller.
+Each worldline is a `fiber:spawn` that only folds that list. On this tip
+`(fiber:spawn-backend)` is `2` (CLI thread fallback). Bodies are
+serialized by the evaluator mutex, so this is not serve-async scheduler
+fibers. Copying the matrix inside a fiber is not done: each `vector-set!`
+bumps `defuse_version` and a private copy is unusably slow. `fiber_live`
+is stamped only when four distinct positive ids join to landing lists.
+Otherwise the same folds run on the calling fiber and the stamp is
+`host-sequential`. That label is never upgraded by hand.
+
+One more Soft limit, learned the hard way: `set-code` + `eval-current`
+after `race.aura` is in the workspace recompiles closures and drops
+primitives (`cons`, `null?`, `*`). So `place-agg` / `place-def` stay
+load-time defines (not rewritten by the seed string), the place-fn seed
+runs once before `race.aura` is loaded, and `play.aura` / `duel.aura`
+load race, rules, and propose only after their own closures are built.
+A second `tetris:strategy-seed!` only probes.
+
+### Live rule mutate
+
+`tetris:rule-score` and `tetris:rule-width` are rules helpers. The first
+swap `set-code`s them once (sandbox off, same seed path as `place-fn`);
+after that only `hot-strategy:swap!` / `heal!` under
+`mutate:boundary-safe?` and `mutate:quota-ok?`. Bodies that mention
+`set!`, `score`, `lines`, `display`, `mutate:`, `eval`, `load`, `shell`,
+or `http` are rejected (`rule_reject`) before rebind. A non-numeric
+probe `heal!`s (`rule_heal`).
+
+`tetris:clear-lines!` is still the only writer of `*score*`. The swapped
+score helper returns a base (classic 100/300/500/800, or the ghost-bonus
+table 140/340/540/840) and the clear multiplies by level. Width 12 is
+applied only after the probe returns 12, by remapping the matrix stride
+(`tetris:retarget-width!`). That writes `*W*` and `*board*`, not `*score*`.
+`INPUT mutate-wide` / `mutate-score` toggle one helper. Key `m`
+(`INPUT mutate`) cycles wide, then the bonus table, then heal-all.
+EXPLAIN reasons: `rule_width`, `rule_score`, `rule_heal`, `rule_reject`.
+
+The hot-strategy slot is a single name. After a successful rule swap the
+code re-registers `tetris:place-fn` so a later place-fn heal does not
+retarget the rule name. `ast:restore` is still a whole-tree snapshot; a
+failed probe falls back to the previous body string.
+
+### Live propose
+
+`INPUT propose` (key `u`) wants a `(lambda (row piece) …)` or
+`(lambda (board piece) …)` string. Soft runs the M1 gate and probe, then
+stamps `propose_ok`, `propose_reject`, or `propose_heal`.
+
+HTTP does not run inside Soft. `scripts/propose_minimax.py` reads
+`~/.config/aura-build/minimax.env` plus the key file, POSTs to the
+MiniMax chat endpoint, and writes the lambda. The viewport mounts that
+config read-only so `u` can `sh` the helper from inside the dev image.
+`TETRIS_PROPOSE_FILE` skips HTTP and is what the fixture smoke uses.
+No key: the live half prints `TETRIS_M3_PROPOSE_SKIP`. The fixture half
+still prints `TETRIS_M3_PROPOSE_OK`.
+
 ## Non-goals
 
 - **Not another Tetris clone.** Guideline finesse, t-spins, DAS tuning, and
@@ -190,6 +269,11 @@ bash scripts/smoke_m2.sh
 | `scripts/duel.sh` | split-screen duel |
 | `scripts/smoke_m1.sh` | M0 + M1 + SNAP pipe + viewport build |
 | `scripts/smoke_m2.sh` | duel + explain + storm tokens |
+| `soft/tetris/race.aura` | four worldline folds, GHOST + WORLD |
+| `soft/tetris/rules.aura` | width and score-table hot-strategy |
+| `soft/tetris/propose.aura` | gate a proposed place-fn body |
+| `scripts/smoke_m3.sh` | race + rule + propose tokens |
+| `scripts/propose_minimax.py` | host HTTP, no key on stdout |
 
 ## 短中文
 
@@ -210,3 +294,11 @@ M2：同一 7-bag 上两盘。左 `place-agg`（更深、更靠右），右 `pla
 解释行是 `EXPLAIN mid=` `reason=`（`gate_reject`、`heal`、`storm_sz`）。
 S/Z 扎堆时 `hot-strategy:swap!` 到防守，袋子平静后 `heal!`。
 对局里的换策仍是 swap / heal，不是 Restricted，也不是 AOT。
+
+M3：`v` 在同一锁盘和当前方块上比四条世界线（agg / def / hole-fill /
+tetris-hunt），SNAP 画出四枚幽灵和 `WINNER`。`fiber_live` 只在四次
+`fiber:spawn` 都 join 成功时出现；否则是 `host-sequential`。CLI 后端是
+thread fallback（backend 2），不是 serve-async 调度器纤维。`m` 热换规则
+助手：棋盘宽 10↔12，或消行基础分加幽灵奖励，失败 `heal!`，不直接
+`set!` 分数。`u` 由宿主 Python 调 MiniMax，Soft 只对 lambda 做门禁。
+这仍然不是 Restricted，也不是 AOT。

@@ -169,3 +169,4 @@ gains four `GHOST` landings plus `WINNER` and `WORLD line=fiber_live` or
 before level), then `rule_heal`. `u` calls `scripts/propose_minimax.py` on
 the host and Soft gates the lambda (`propose_ok` / `propose_reject` /
 `propose_heal`). Soft is still not Restricted mode.
+
