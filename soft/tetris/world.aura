@@ -180,7 +180,7 @@
 (define (tetris:rotate!)
   (if (= *active* 0) #f
       (let ((nr (modulo (+ *prot* 1) 4)))
-        (let try ((offs (list 0 -1 1)))
+        (let kick ((offs (list 0 -1 1)))
           (if (null? offs) #f
               (let ((ox (car offs)))
                 (if (cells-ok? *ptype* nr (+ *px* ox) *py*)
@@ -188,7 +188,19 @@
                       (set! *prot* nr)
                       (set! *px* (+ *px* ox))
                       #t)
-                    (try (cdr offs)))))))))
+                    (kick (cdr offs)))))))))
+(define (tetris:rotate-ccw!)
+  (if (= *active* 0) #f
+      (let ((nr (modulo (+ *prot* 3) 4)))
+        (let kick ((offs (list 0 -1 1)))
+          (if (null? offs) #f
+              (let ((ox (car offs)))
+                (if (cells-ok? *ptype* nr (+ *px* ox) *py*)
+                    (begin
+                      (set! *prot* nr)
+                      (set! *px* (+ *px* ox))
+                      #t)
+                    (kick (cdr offs)))))))))
 (define (tetris:fill! x y)
   (cell-set! x y 8))
 (define (tetris:prep-I-clear!)
