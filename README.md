@@ -39,6 +39,9 @@ Soft seed (`set-code` of `tetris:place-fn`) runs once at startup inside
 | e / x | `cw` | rotate clockwise |
 | c | `hold` | hold (once per piece) |
 | f | `auto` | one step of `tetris:choose-move` |
+| v | `race` | four worldlines on this piece (agg / def / hole-fill / tetris-hunt) |
+| m | `mutate` | cycle rules: width 12, ghost-bonus score, heal |
+| u | `propose` | MiniMax lambda via host Python, Soft gates it |
 | t | `toggle` | duel only: pilot the other board |
 | p | — | pause (C stops sending `tick`) |
 | r | `restart` | Soft reset, same strategy slot |
@@ -66,6 +69,8 @@ runs Soft inside Docker with `--entrypoint /usr/local/bin/gosu`). Needs
 bash scripts/smoke_soft.sh    # M0: LINES=4 SCORE=400 TETRIS_M0_OK
 bash scripts/smoke_m1.sh      # M0 + strategy gate/swap/heal + SNAP pipe
 bash scripts/smoke_m2.sh      # duel + explain + storm → TETRIS_M2_SMOKE_OK
+bash scripts/smoke_m3.sh      # race + rule mutate + propose fixture
+bash scripts/race.sh          # play.sh with v / m / u called out
 bash scripts/demo_soft.sh     # headless ASCII, ends TETRIS_DEMO_DONE
 ```
 
@@ -100,6 +105,10 @@ sudo docker run --rm --entrypoint /usr/local/bin/gosu \
 | `soft/tetris/m2_duel_smoke.aura` | `TETRIS_M2_DUEL_OK` |
 | `soft/tetris/m2_explain_smoke.aura` | `TETRIS_M2_EXPLAIN_OK` |
 | `soft/tetris/m2_storm_smoke.aura` | `TETRIS_M2_STORM_OK` |
+| `soft/tetris/race.aura` | quad worldline race, `fiber_live` or `host-sequential` |
+| `soft/tetris/rules.aura` | hot-strategy swap of width and score helpers |
+| `soft/tetris/propose.aura` | gate a `(lambda (row piece) …)` body |
+| `scripts/propose_minimax.py` | host HTTP; writes a lambda Soft then gates |
 | `c/play.c` | ANSI viewport (blit + keys only; `--duel` splits the frame) |
 | `examples/dogfood/` | GOAL / stub / verify / dogfood.json for `aura-build llm-dogfood` |
 
@@ -142,8 +151,21 @@ bash scripts/duel.sh         # 双盘同袋。t 换边，f 两边各走一步
 bash scripts/smoke_soft.sh   # LINES=4 SCORE=400 TETRIS_M0_OK
 bash scripts/smoke_m1.sh     # M0 + 策略门 + SNAP 管道
 bash scripts/smoke_m2.sh     # 对决 + explain + storm
+bash scripts/smoke_m3.sh     # 四世界线 + 规则热更 + propose
 bash scripts/demo_soft.sh    # ASCII 自动演示，结尾 TETRIS_DEMO_DONE
 ```
 
 镜像 `ghcr.io/cybrid-systems/dev:v1.0.9`，Soft 二进制 `/workspace/aura-grok/build/aura`。
 仓库：https://github.com/cybrid-systems/aura-tetris
+
+
+## M3
+
+`v` / `INPUT race` forks four placement folds (aggressive, defensive,
+hole-fill, tetris-hunt) on the locked board and the current piece. SNAP
+gains four `GHOST` landings plus `WINNER` and `WORLD line=fiber_live` or
+`host-sequential`. `m` cycles a rules helper: board width 10→12
+(`rule_width`), then a ghost-bonus score table (`rule_score`, 140/340/540/840
+before level), then `rule_heal`. `u` calls `scripts/propose_minimax.py` on
+the host and Soft gates the lambda (`propose_ok` / `propose_reject` /
+`propose_heal`). Soft is still not Restricted mode.
