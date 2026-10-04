@@ -37,10 +37,34 @@ typedef struct {
     int tick;
     int mid;
     char reason[32];
+    int has2;
+    char board2[H][W];
+    int active2;
+    int type2;
+    int rot2;
+    int px2;
+    int py2;
+    int cx2[8];
+    int cy2[8];
+    int ncells2;
+    int next2;
+    int hold2;
+    int score2;
+    int lines2;
+    int level2;
+    int alive2;
+    int tick2;
+    int pilot; /* 0 = left, 1 = right */
+    int winner_mid;
+    char winner_side[8];
+    char winner_reason[32];
+    int explain_mid;
+    char explain_reason[32];
     int accepted;
 } Snap;
 
 static volatile sig_atomic_t g_stop = 0;
+static int g_duel = 0;
 
 static void on_sig(int sig) {
     (void)sig;
@@ -200,12 +224,34 @@ static int parse_cells(const char *spec, Snap *s) {
     return 0;
 }
 
+static void parse_word(const char *line, const char *key, char *out, size_t cap) {
+    out[0] = '\0';
+    const char *p = strstr(line, key);
+    if (p == NULL || cap == 0)
+        return;
+    p += strlen(key);
+    size_t i = 0;
+    while (p[i] != '\0' && p[i] != ' ' && i + 1 < cap) {
+        out[i] = p[i];
+        i++;
+    }
+    out[i] = '\0';
+}
+
 static int parse_snap(const char *text, Snap *s) {
     memset(s, 0, sizeof(*s));
     s->hold = -1;
     s->next = -1;
+    s->hold2 = -1;
+    s->next2 = -1;
+    snprintf(s->reason, sizeof(s->reason), "boot");
+    snprintf(s->explain_reason, sizeof(s->explain_reason), "boot");
+    snprintf(s->winner_side, sizeof(s->winner_side), "-");
+    snprintf(s->winner_reason, sizeof(s->winner_reason), "boot");
     int row = 0;
+    int row2 = 0;
     int saw_board = 0;
+    int saw_board2 = 0;
     int saw_score = 0;
     int saw_end = 0;
     const char *p = text;
@@ -221,11 +267,49 @@ static int parse_snap(const char *text, Snap *s) {
             /* header */
         } else if (strcmp(line, "BOARD") == 0) {
             saw_board = 1;
+            saw_board2 = 0;
+        } else if (strcmp(line, "BOARD2") == 0) {
+            saw_board = 0;
+            saw_board2 = 1;
+            s->has2 = 1;
+            row2 = 0;
+        } else if (saw_board2 && row2 < H && strncmp(line, "PIECE2 ", 7) != 0 &&
+                   strncmp(line, "PIECE ", 6) != 0) {
+            if ((int)strlen(line) < W)
+                return 0;
+            memcpy(s->board2[row2], line, (size_t)W);
+            row2++;
         } else if (saw_board && row < H && strncmp(line, "PIECE ", 6) != 0) {
             if ((int)strlen(line) < W)
                 return 0;
             memcpy(s->board[row], line, (size_t)W);
             row++;
+        } else if (strncmp(line, "PIECE2 ", 7) == 0) {
+            saw_board2 = 0;
+            s->has2 = 1;
+            if (parse_kv_int(line, "active=", &s->active2) != 0)
+                return 0;
+            if (parse_kv_int(line, "type=", &s->type2) != 0)
+                return 0;
+            if (parse_kv_int(line, "rot=", &s->rot2) != 0)
+                return 0;
+            if (parse_kv_int(line, "x=", &s->px2) != 0)
+                return 0;
+            if (parse_kv_int(line, "y=", &s->py2) != 0)
+                return 0;
+            const char *cells = strstr(line, "cells=");
+            if (cells == NULL)
+                return 0;
+            /* parse into the primary cell slots, then copy across */
+            Snap tmp;
+            memset(&tmp, 0, sizeof(tmp));
+            if (parse_cells(cells + 6, &tmp) != 0)
+                return 0;
+            s->ncells2 = tmp.ncells;
+            for (int ci = 0; ci < tmp.ncells; ci++) {
+                s->cx2[ci] = tmp.cx[ci];
+                s->cy2[ci] = tmp.cy[ci];
+            }
         } else if (strncmp(line, "PIECE ", 6) == 0) {
             saw_board = 0;
             if (parse_kv_int(line, "active=", &s->active) != 0)
@@ -241,10 +325,21 @@ static int parse_snap(const char *text, Snap *s) {
             const char *cells = strstr(line, "cells=");
             if (cells == NULL || parse_cells(cells + 6, s) != 0)
                 return 0;
+        } else if (strncmp(line, "NEXT2 ", 6) == 0) {
+            s->next2 = atoi(line + 6);
         } else if (strncmp(line, "NEXT ", 5) == 0) {
             s->next = atoi(line + 5);
+        } else if (strncmp(line, "HOLD2 ", 6) == 0) {
+            s->hold2 = atoi(line + 6);
         } else if (strncmp(line, "HOLD ", 5) == 0) {
             s->hold = atoi(line + 5);
+        } else if (strncmp(line, "SCORE2 ", 7) == 0) {
+            if (parse_kv_int(line, "score=", &s->score2) != 0)
+                return 0;
+            if (parse_kv_int(line, "lines=", &s->lines2) != 0)
+                return 0;
+            if (parse_kv_int(line, "level=", &s->level2) != 0)
+                return 0;
         } else if (strncmp(line, "SCORE ", 6) == 0) {
             if (parse_kv_int(line, "score=", &s->score) != 0)
                 return 0;
@@ -253,11 +348,29 @@ static int parse_snap(const char *text, Snap *s) {
             if (parse_kv_int(line, "level=", &s->level) != 0)
                 return 0;
             saw_score = 1;
+        } else if (strncmp(line, "STATUS2 ", 8) == 0) {
+            if (parse_kv_int(line, "alive=", &s->alive2) != 0)
+                return 0;
+            if (parse_kv_int(line, "tick=", &s->tick2) != 0)
+                return 0;
         } else if (strncmp(line, "STATUS ", 7) == 0) {
             if (parse_kv_int(line, "alive=", &s->alive) != 0)
                 return 0;
             if (parse_kv_int(line, "tick=", &s->tick) != 0)
                 return 0;
+        } else if (strncmp(line, "PILOT ", 6) == 0) {
+            char side[8];
+            parse_word(line, "side=", side, sizeof(side));
+            s->pilot = (side[0] == 'R') ? 1 : 0;
+        } else if (strncmp(line, "WINNER ", 7) == 0) {
+            if (parse_kv_int(line, "mid=", &s->winner_mid) != 0)
+                return 0;
+            parse_word(line, "side=", s->winner_side, sizeof(s->winner_side));
+            parse_word(line, "reason=", s->winner_reason, sizeof(s->winner_reason));
+        } else if (strncmp(line, "EXPLAIN ", 8) == 0) {
+            if (parse_kv_int(line, "mid=", &s->explain_mid) != 0)
+                return 0;
+            parse_word(line, "reason=", s->explain_reason, sizeof(s->explain_reason));
         } else if (strncmp(line, "MID ", 4) == 0) {
             if (parse_kv_int(line, "mid=", &s->mid) != 0)
                 return 0;
@@ -286,11 +399,117 @@ static int cell_at(const Snap *s, int x, int y, int *type_out) {
     return 0;
 }
 
+static int cell_at2(const Snap *s, int x, int y, int *type_out) {
+    for (int i = 0; i < s->ncells2; i++) {
+        if (s->cx2[i] == x && s->cy2[i] == y) {
+            *type_out = s->type2;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int draw_board_row(char *frame, size_t cap, size_t *n, const Snap *s, int y, int right) {
+    int room = (int)(cap - *n);
+    int wr = snprintf(frame + *n, (size_t)room, "|");
+    if (wr < 0 || wr >= room)
+        return -1;
+    *n += (size_t)wr;
+    for (int x = 0; x < W; x++) {
+        int pt = 0;
+        const char *col;
+        const char *glyph;
+        int live;
+        char locked;
+        if (right) {
+            live = cell_at2(s, x, y, &pt);
+            locked = s->board2[y][x];
+        } else {
+            live = cell_at(s, x, y, &pt);
+            locked = s->board[y][x];
+        }
+        if (live) {
+            col = piece_color(pt);
+            glyph = "[]";
+        } else if (locked >= '1' && locked <= '7') {
+            col = piece_color(locked - '1');
+            glyph = "##";
+        } else {
+            col = "\033[2m";
+            glyph = "..";
+        }
+        room = (int)(cap - *n);
+        wr = snprintf(frame + *n, (size_t)room, "%s%s\033[0m", col, glyph);
+        if (wr < 0 || wr >= room)
+            return -1;
+        *n += (size_t)wr;
+    }
+    room = (int)(cap - *n);
+    wr = snprintf(frame + *n, (size_t)room, "|");
+    if (wr < 0 || wr >= room)
+        return -1;
+    *n += (size_t)wr;
+    return 0;
+}
+
 static void blit(int tty, const Snap *s, int paused) {
-    char frame[8192];
+    static char frame[65536];
     size_t n = 0;
     int room = (int)sizeof(frame);
     const char *banner = paused ? "PAUSED" : (s->alive ? "RUN" : "TOPOUT");
+    if (s->has2 || g_duel) {
+        const char *lb = s->pilot == 0 ? "LEFT pilot" : "LEFT auto";
+        const char *rb = s->pilot == 1 ? "RIGHT pilot" : "RIGHT auto";
+        const char *alive = (s->alive && s->alive2) ? "RUN" : "CHECK";
+        if (paused)
+            alive = "PAUSED";
+        int wrd = snprintf(frame + n, (size_t)room,
+                           "\033[2J\033[H\033[1maura-tetris duel\033[0m  %s\n"
+                           "winner mid %d  side %s  %s    explain mid %d  %s\n"
+                           "%s                 %s\n",
+                           alive, s->winner_mid, s->winner_side, s->winner_reason,
+                           s->explain_mid, s->explain_reason, lb, rb);
+        if (wrd < 0 || wrd >= room)
+            return;
+        n += (size_t)wrd;
+        room -= wrd;
+        for (int y = 0; y < H; y++) {
+            if (draw_board_row(frame, sizeof(frame), &n, s, y, 0) != 0)
+                return;
+            room = (int)(sizeof(frame) - n);
+            wrd = snprintf(frame + n, (size_t)room, "  ");
+            if (wrd < 0 || wrd >= room)
+                return;
+            n += (size_t)wrd;
+            if (draw_board_row(frame, sizeof(frame), &n, s, y, 1) != 0)
+                return;
+            room = (int)(sizeof(frame) - n);
+            wrd = snprintf(frame + n, (size_t)room, "\n");
+            if (wrd < 0 || wrd >= room)
+                return;
+            n += (size_t)wrd;
+        }
+        room = (int)(sizeof(frame) - n);
+        wrd = snprintf(frame + n, (size_t)room,
+                       "L score %d lines %d lv %d    R score %d lines %d lv %d\n"
+                       "L next %s hold %s          R next %s hold %s\n"
+                       "mid %d %s    a/d move  s soft  w hard  z/q ccw  e/x cw\n"
+                       "c hold  f auto both  t toggle pilot  p pause  r restart  Esc/Q quit\n",
+                       s->score, s->lines, s->level, s->score2, s->lines2, s->level2,
+                       piece_name(s->next), piece_name(s->hold),
+                       piece_name(s->next2), piece_name(s->hold2),
+                       s->mid, s->reason);
+        if (wrd < 0 || wrd >= room)
+            return;
+        n += (size_t)wrd;
+        if (tty >= 0)
+            write_all(tty, frame, n);
+        else {
+            fwrite(frame, 1, n, stdout);
+            fflush(stdout);
+        }
+        return;
+    }
     int wr = snprintf(frame + n, (size_t)room,
                       "\033[2J\033[H\033[1maura-tetris\033[0m  %s\n"
                       "+--------------------+\n",
@@ -336,9 +555,11 @@ static void blit(int tty, const Snap *s, int paused) {
                   "score %d   lines %d   level %d   tick %d\n"
                   "next %s   hold %s   mid %d   %s\n"
                   "a/d move  s soft  w/space hard  z/q ccw  e/x cw\n"
-                  "c hold  f strategy-step  p pause  r restart  Esc/Q quit\n",
+                  "c hold  f strategy-step  p pause  r restart  Esc/Q quit\n"
+                  "explain mid %d  %s\n",
                   s->score, s->lines, s->level, s->tick,
-                  piece_name(s->next), piece_name(s->hold), s->mid, s->reason);
+                  piece_name(s->next), piece_name(s->hold), s->mid, s->reason,
+                  s->explain_mid, s->explain_reason);
     if (wr < 0 || wr >= room)
         return;
     n += (size_t)wr;
@@ -366,7 +587,8 @@ enum {
     VK_AUTO,
     VK_PAUSE,
     VK_RESTART,
-    VK_QUIT
+    VK_QUIT,
+    VK_TOGGLE
 };
 
 static const char *verb_of(int k) {
@@ -381,6 +603,7 @@ static const char *verb_of(int k) {
     case VK_AUTO: return "auto";
     case VK_RESTART: return "restart";
     case VK_QUIT: return "quit";
+    case VK_TOGGLE: return "toggle";
     default: return NULL;
     }
 }
@@ -406,6 +629,8 @@ static int map_key(unsigned char ch) {
     case 'Q': return VK_QUIT;
     case 'c':
     case 'C': return VK_HOLD;
+    case 't':
+    case 'T': return VK_TOGGLE;
     case 'f':
     case 'F': return VK_AUTO;
     case 'p':
@@ -479,14 +704,19 @@ static int send_verb(int fd, const char *verb) {
 
 static void usage(const char *argv0) {
     fprintf(stderr,
-            "usage: %s -- soft-command [args...]\n"
-            "       Soft child speaks SNAP on stdout; accepts INPUT verbs on stdin.\n",
+            "usage: %s [--duel] -- soft-command [args...]\n"
+            "       Soft child speaks SNAP on stdout; accepts INPUT verbs on stdin.\n"
+            "       --duel: split blit when SNAP carries BOARD2. t toggles pilot.\n",
             argv0);
 }
 
 int main(int argc, char **argv) {
     int soft_i = -1;
     for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "--duel") == 0) {
+            g_duel = 1;
+            continue;
+        }
         if (strcmp(argv[i], "--") == 0) {
             soft_i = i + 1;
             break;
@@ -562,7 +792,8 @@ int main(int argc, char **argv) {
             sleep_ms(20);
             continue;
         }
-        if (!snap.alive && strcmp(verb, "restart") != 0 && strcmp(verb, "quit") != 0) {
+        /* tick is only queued while alive, so a dead board only accepts restart/toggle. */
+        if (!snap.alive && k != VK_RESTART && k != VK_TOGGLE) {
             blit(tty, &snap, paused);
             sleep_ms(40);
             continue;
